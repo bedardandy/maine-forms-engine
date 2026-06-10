@@ -143,6 +143,9 @@ behavior unless a consumer opts in):
   reserving `GONE` for a definitive 404/410 or a non-PDF response);
   `main` gains `entry_filter` (restrict the default probe set, e.g. corp's
   `"fetch": true` flag) and `default_retries`.
+- `drift/fetch_pdfs.py` — `main` gains the same `entry_filter` /
+  `default_retries` hooks plus a `--list` flag (show what would be fetched,
+  do not download — the corp fork's feature, now available everywhere).
 - `maine_forms_engine.specs` — `pdf_manifest.schema.json` now ships inside
   the package (package data + `specs.pdf_manifest_schema()` loader) so a
   consumer repo can validate its converted manifest in CI. The prose

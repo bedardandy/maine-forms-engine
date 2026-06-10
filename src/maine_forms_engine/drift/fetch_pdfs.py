@@ -65,9 +65,14 @@ def _verify(data: bytes, entry: dict) -> str | None:
 
 
 def main(argv=None, *, default_manifest: pathlib.Path | None = None,
-         default_forms_root: pathlib.Path | None = None) -> int:
-    """CLI entry point. ``argv`` and the two defaults exist for consumer-repo
-    shims, which pin the manifest/forms tree to their repo layout."""
+         default_forms_root: pathlib.Path | None = None,
+         entry_filter=None, default_retries: int = 3) -> int:
+    """CLI entry point. The keyword hooks exist for consumer-repo shims:
+    the two defaults pin the manifest/forms tree to a repo layout;
+    ``entry_filter`` (``(form_id, entry) -> bool``) restricts what is
+    fetchable (e.g. the corp repo only fetches manifest entries flagged
+    ``"fetch": true``); ``default_retries`` overrides the donor's
+    ``--retries`` default."""
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -79,8 +84,10 @@ def main(argv=None, *, default_manifest: pathlib.Path | None = None,
     ap.add_argument("--forms", default="", help="comma list to limit; omit for all")
     ap.add_argument("--force", action="store_true",
                     help="re-download even if a valid file is already present")
+    ap.add_argument("--list", action="store_true",
+                    help="list what would be fetched and exit, do not download")
     ap.add_argument("--timeout", type=int, default=30)
-    ap.add_argument("--retries", type=int, default=3)
+    ap.add_argument("--retries", type=int, default=default_retries)
     args = ap.parse_args(argv)
 
     manifest = json.loads(args.manifest.read_text())
@@ -92,6 +99,13 @@ def main(argv=None, *, default_manifest: pathlib.Path | None = None,
             print(f"unknown form ids (not in manifest): {', '.join(missing)}")
             return 2
         forms = {f: forms[f] for f in want}
+    if entry_filter is not None:
+        forms = {f: e for f, e in forms.items() if entry_filter(f, e)}
+
+    if args.list:
+        for fid in sorted(forms):
+            print(f"fetch  {fid}  {forms[fid]['url']}")
+        return 0
 
     n_ok = n_skip = n_fetch = n_fail = 0
     failures: list[str] = []
