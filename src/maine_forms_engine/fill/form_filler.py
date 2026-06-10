@@ -142,16 +142,97 @@ def _wrap_across_widgets(
     return lines, ""
 
 
+def _widget_on_state(w) -> str | None:
+    """A button widget's on-state name (the /AP key that isn't Off)."""
+    try:
+        return w.on_state()
+    except Exception:
+        pass
+    try:
+        states = (w.button_states() or {}).get("normal") or []
+        on = [s for s in states if s != "Off"]
+        return on[0] if on else None
+    except Exception:
+        return None
+
+
+def detect_radio_groups(doc) -> dict[str, list[str]]:
+    """{field_name: sorted on-state options} for every radio-style group.
+
+    A group of same-named BUTTON widgets is a radio group when any widget is
+    radio-typed, or when two or more button widgets share the name with
+    DISTINCT on-states (a checkbox-encoded radio: checking one would still
+    visually select one option among several). This deliberately does NOT
+    match the two look-alike classes:
+
+    - same-named TEXT widgets (continuation lines — the wrap path), and
+    - same-named checkboxes with one shared on-state (the court repos'
+      legitimate fan-out class: one value intentionally checks every
+      appearance).
+    """
+    by_name: dict[str, dict] = {}
+    for page in doc:
+        for w in page.widgets() or []:
+            if w.field_type not in (fitz.PDF_WIDGET_TYPE_CHECKBOX,
+                                    fitz.PDF_WIDGET_TYPE_RADIOBUTTON):
+                continue
+            rec = by_name.setdefault(w.field_name,
+                                     {"n": 0, "states": set(), "radio": False})
+            rec["n"] += 1
+            rec["radio"] |= w.field_type == fitz.PDF_WIDGET_TYPE_RADIOBUTTON
+            on = _widget_on_state(w)
+            if on:
+                rec["states"].add(on)
+    return {name: sorted(rec["states"])
+            for name, rec in by_name.items()
+            if rec["radio"] or (rec["n"] >= 2 and len(rec["states"]) >= 2)}
+
+
+def match_radio_option(value, options) -> str | None:
+    """Resolve a case value to one of a radio group's on-state options.
+
+    Purely a *suggestion* helper — the engine never writes radio groups.
+    Matching is punctuation/case-insensitive ("nonresident" -> the
+    "Non Resident" state); affirmative/negative tokens map onto a Yes/No
+    pair. None when nothing matches unambiguously.
+    """
+    if value is None or not options:
+        return None
+    import re as _re
+
+    def norm(s):
+        return _re.sub(r"[^a-z0-9]+", "", str(s).lower())
+
+    nv = norm(value)
+    if nv:
+        hits = [o for o in options if norm(o) == nv]
+        if len(hits) == 1:
+            return hits[0]
+    by_norm = {norm(o): o for o in options}
+    v = str(value).strip().lower()
+    if v in {"x", "✓", "yes", "y", "1", "true", "on", "checked", "[x]",
+             "selected"} and "yes" in by_norm:
+        return by_norm["yes"]
+    if v in {"no", "n", "0", "false", "off", "unchecked"} and "no" in by_norm:
+        return by_norm["no"]
+    return None
+
+
 def _group_widgets_by_name(doc) -> dict[str, list[dict]]:
     """Return {field_name: [{xref, rect, fontsize, capacity, pos}, ...]}
     sorted top-to-bottom across pages. We key on widget xref (not the
     Widget object) because PyMuPDF re-creates Widget objects on every
     page.widgets() call, so object identity isn't stable across loops.
+
+    Checkboxes are excluded (filled directly in pass 1); radio buttons are
+    excluded so a radio group is never mistaken for a continuation-line text
+    group (the wrap path would delete its widgets and overlay text).
     """
     groups: dict[str, list[tuple[int, float, float, dict]]] = {}
     for page_num, page in enumerate(doc):
         for w in page.widgets() or []:
-            if w.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX:
+            if w.field_type in (fitz.PDF_WIDGET_TYPE_CHECKBOX,
+                                fitz.PDF_WIDGET_TYPE_RADIOBUTTON):
                 continue
             entry = {
                 "xref": w.xref,
@@ -258,6 +339,13 @@ def fill_form(
     overflowed: list[tuple[str, str]] = []  # (field_name, remainder)
 
     groups = _group_widgets_by_name(doc)
+    # Radio soft lock: a value can land on the wrong option (or worse, the
+    # whole group can be deleted by the wrap path), so radio groups are never
+    # written — they are skipped with a structured report entry and left for
+    # a human. This is an engine-layer safety net regardless of what the
+    # caller mapped.
+    radio_groups = detect_radio_groups(doc)
+    radio_skipped: dict[str, dict] = {}
 
     # Pass 1: write single-widget fields and checkboxes the easy way.
     # For multi-widget text groups we have to bypass AcroForm /V because
@@ -273,6 +361,23 @@ def fill_form(
             if name not in field_data:
                 continue
             value = field_data[name]
+            if name in radio_groups:
+                # Soft lock: never route a radio group through the text or
+                # checkbox path. Report it once with the available options
+                # and (when the requested value names one) a suggestion.
+                if name not in radio_skipped:
+                    options = radio_groups[name]
+                    radio_skipped[name] = {
+                        "field_id": name, "kind": "radio_group",
+                        "options": options,
+                        "suggested": match_radio_option(value, options),
+                        "action": "manual selection required",
+                    }
+                    logger.warning(
+                        "%r is a radio group (options: %s) — not written; "
+                        "manual selection required", name,
+                        ", ".join(options))
+                continue
             if widget.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX:
                 # Check ONLY on an explicit affirmative token, never on an
                 # incidental string. Many forms collapse a caption text widget
@@ -395,7 +500,7 @@ def fill_form(
         for w in page.widgets() or []:
             if w.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX:
                 checkbox_names.add(w.field_name)
-    available = set(groups.keys()) | checkbox_names
+    available = set(groups.keys()) | checkbox_names | set(radio_groups)
     missing_fields = [
         k for k in field_data
         if k not in available and not k.startswith("__wrap_cache_")
@@ -479,6 +584,9 @@ def fill_form(
             "filled_count": filled_count,
             "missing_fields": missing_fields,
             "overflowed": [name for name, _ in overflowed],
+            # yellow light: radio groups a value targeted but the engine
+            # refused to write (keys are widget field names at this layer)
+            "radio_groups_skipped": list(radio_skipped.values()),
         }
     return str(output_path)
 

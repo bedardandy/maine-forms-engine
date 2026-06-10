@@ -46,6 +46,65 @@ def synthetic_form(path: pathlib.Path, *, captions: bool = False) -> None:
     doc.close()
 
 
+def add_radio_group(path: pathlib.Path, name: str, states: list[str],
+                    y: float = 300.0) -> None:
+    """Append a radio group to a saved PDF: one same-named button widget per
+    on-state. PyMuPDF can't author radios directly, so checkboxes are added
+    and rewritten via pikepdf (/AP /N re-keyed to the on-state + the
+    AcroForm radio flag set) — mirroring how official blanks encode them."""
+    import pikepdf
+
+    doc = fitz.open(str(path))
+    page = doc[0]
+    rects = []
+    for i in range(len(states)):
+        w = fitz.Widget()
+        w.field_name = name
+        w.field_type = fitz.PDF_WIDGET_TYPE_CHECKBOX
+        w.rect = fitz.Rect(72 + 40 * i, y, 86 + 40 * i, y + 14)
+        page.add_widget(w)
+        rects.append(tuple(w.rect))
+    doc.save(str(path), incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
+    doc.close()
+
+    pdf = pikepdf.open(str(path), allow_overwriting_input=True)
+    i = 0
+    for pg in pdf.pages:
+        for annot in pg.get("/Annots", []):
+            if str(annot.get("/T", "")) != name:
+                continue
+            ap = annot.get("/AP")
+            if ap is not None and "/N" in ap:
+                n = ap["/N"]
+                newn = pikepdf.Dictionary()
+                for k in [str(k) for k in n.keys()]:
+                    tgt = "/" + states[i] if k == "/Yes" else k
+                    newn[pikepdf.Name(tgt)] = n[pikepdf.Name(k)]
+                ap["/N"] = newn
+            annot["/Ff"] = 32768  # radio-button field flag
+            annot["/V"] = pikepdf.Name("/Off")
+            annot["/AS"] = pikepdf.Name("/Off")
+            i += 1
+    pdf.save(str(path))
+    pdf.close()
+
+
+def add_checkbox_fanout(path: pathlib.Path, name: str, n: int = 2,
+                        y: float = 340.0) -> None:
+    """Append the court repos' legitimate fan-out class: same-named
+    checkboxes that all share the default /Yes on-state."""
+    doc = fitz.open(str(path))
+    page = doc[0]
+    for i in range(n):
+        w = fitz.Widget()
+        w.field_name = name
+        w.field_type = fitz.PDF_WIDGET_TYPE_CHECKBOX
+        w.rect = fitz.Rect(72 + 40 * i, y, 86 + 40 * i, y + 14)
+        page.add_widget(w)
+    doc.save(str(path), incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
+    doc.close()
+
+
 @pytest.fixture
 def blank_pdf(tmp_path):
     p = tmp_path / "blank.pdf"
@@ -100,6 +159,58 @@ def form_tree(tmp_path):
     (fdir / "schema.json").write_text(json.dumps(SCHEMA))
     (fdir / "mapping.json").write_text(json.dumps(MAPPING))
     (fdir / "examples" / "sample_case.json").write_text(json.dumps(CASE))
+    data = blank.read_bytes()
+    (root / "catalog").mkdir()
+    (root / "catalog" / "pdf_manifest.json").write_text(json.dumps({
+        "count": 1,
+        "forms": {"TEST-1": {
+            "url": "https://example.test/TEST-1",
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "bytes": len(data),
+        }},
+    }))
+    return root
+
+
+RADIO_SCHEMA = {
+    "form_id": "TEST-1",
+    "fields": SCHEMA["fields"] + [
+        {"field_id": "residency_status", "label": "residency_status",
+         "type": "radio", "rect": [72, 300, 86, 314]},
+        {"field_id": "residency_status_2", "label": "residency_status",
+         "type": "radio", "rect": [112, 300, 126, 314]},
+    ],
+}
+
+RADIO_MAPPING = {
+    **MAPPING,
+    "manual": {
+        "residency_status": {
+            "fill": "manual", "kind": "radio_group",
+            "key": "facts.residency_status",
+            "options": ["Resident", "Nonresident"],
+            "note": "single-status radio group; never written by the engine",
+        },
+    },
+}
+
+RADIO_CASE = {**CASE,
+              "facts": {**CASE["facts"], "residency_status": "nonresident"}}
+
+
+@pytest.fixture
+def radio_form_tree(tmp_path):
+    """form_tree plus a 2-option radio group ('Resident'/'Nonresident')
+    declared "fill": "manual" in mapping.json."""
+    root = tmp_path / "radio_repo"
+    fdir = root / "forms" / "TEST-1"
+    (fdir / "examples").mkdir(parents=True)
+    blank = fdir / "TEST-1.pdf"
+    synthetic_form(blank)
+    add_radio_group(blank, "residency_status", ["Resident", "Nonresident"])
+    (fdir / "schema.json").write_text(json.dumps(RADIO_SCHEMA))
+    (fdir / "mapping.json").write_text(json.dumps(RADIO_MAPPING))
+    (fdir / "examples" / "sample_case.json").write_text(json.dumps(RADIO_CASE))
     data = blank.read_bytes()
     (root / "catalog").mkdir()
     (root / "catalog" / "pdf_manifest.json").write_text(json.dumps({

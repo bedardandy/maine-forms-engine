@@ -24,7 +24,7 @@ import os
 import pathlib
 
 from . import verify
-from .form_filler import fill_form
+from .form_filler import fill_form, match_radio_option
 from .field_split import split_to_copy
 from .text_fit import fit as _fit, widget_char_budget
 
@@ -199,7 +199,7 @@ def resolve_mapping(form_id: str, facts: dict,
             unresolved.append((fid, key))
     schema = json.loads((fdir / "schema.json").read_text())
     total_fields = len(schema.get("fields", []))
-    return {
+    out = {
         "form_id": form_id,
         "status": mapping.get("status"),
         "total_fields": total_fields,
@@ -210,6 +210,47 @@ def resolve_mapping(form_id: str, facts: dict,
         "_map": m,
         "_schema": schema,
     }
+    # Manual-fill entries ("fill": "manual" — radio groups the engine never
+    # writes). The canonical key is resolved against the case purely to
+    # SUGGEST an option; nothing is ever written for these fields.
+    manual = _manual_entries(mapping, facts)
+    if manual:
+        out["manual_fields"] = manual
+    return out
+
+
+def _manual_entries(mapping: dict, facts: dict) -> list[dict]:
+    """Resolve a mapping's optional ``manual`` block into yellow-light
+    entries: ``{field_id, kind, options, key, suggested, action[, note]}``.
+
+    Dialect: ``mapping.json`` may carry, next to ``map``::
+
+        "manual": {
+          "<field_id>": {"fill": "manual", "kind": "radio_group",
+                          "key": "facts.residency_status",
+                          "options": ["Resident", "Nonresident"],
+                          "note": "..."}
+        }
+    """
+    entries = []
+    for fid, spec in (mapping.get("manual") or {}).items():
+        if not isinstance(spec, dict) or spec.get("fill") != "manual":
+            continue
+        options = list(spec.get("options") or [])
+        key = spec.get("key")
+        resolved = _resolve_key(key, facts) if key else None
+        entry = {
+            "field_id": fid,
+            "kind": spec.get("kind") or "radio_group",
+            "options": options,
+            "key": key,
+            "suggested": match_radio_option(resolved, options),
+            "action": "manual selection required",
+        }
+        if spec.get("note"):
+            entry["note"] = spec["note"]
+        entries.append(entry)
+    return entries
 
 
 def fill_via_mapping(form_id: str, facts: dict, out_dir: pathlib.Path,
@@ -313,8 +354,33 @@ def fill_via_mapping(form_id: str, facts: dict, out_dir: pathlib.Path,
             (out_dir / f"{form_id}.split.pdf").unlink()
         except OSError:
             pass
+    # Yellow light #1 — radio groups: entries declared "fill": "manual" in
+    # mapping.json (suggestion resolved from the case) merged with any group
+    # the engine's safety net skipped at write time. Never blocks; the PDF is
+    # written either way, with the radio group left untouched.
+    radio_entries = {e["field_id"]: dict(e)
+                     for e in res.get("manual_fields") or []}
+    label_to_fid: dict[str, str] = {}
+    for f in res["_schema"]["fields"]:
+        label_to_fid.setdefault(f["label"], f["field_id"])
+    for e in fill_res.get("radio_groups_skipped") or []:
+        fid = label_to_fid.get(e["field_id"], e["field_id"])
+        if fid not in radio_entries:
+            radio_entries[fid] = {**e, "field_id": fid}
+    # Yellow light #2 — declarative paradox constraints (constraints.json
+    # next to mapping.json; see maine_forms_engine.constraints). Warnings
+    # only; no constraints file = no key, zero behavior change.
+    from ..constraints import evaluate as _eval_constraints
+    from ..constraints import load_constraints as _load_constraints
+    _constraints = _load_constraints(fdir)
+    _extra: dict = {}
+    if radio_entries:
+        _extra["radio_groups"] = list(radio_entries.values())
+    if _constraints is not None:
+        _extra["constraint_warnings"] = _eval_constraints(_constraints, facts)
     if result_style == "tax":
         return {
+            **_extra,
             "form_id": form_id, "ok": True, "status": res["status"],
             "out_pdf": str(out_pdf),
             "mapped_keys": res["mapped_keys"], "resolved": res["resolved"],
@@ -328,7 +394,8 @@ def fill_via_mapping(form_id: str, facts: dict, out_dir: pathlib.Path,
             "blank_verified": blank_ok,
             "fields_split": n_split,
         }
-    out = {"form_id": form_id, "ok": True, "out_pdf": str(out_pdf),
+    out = {**_extra,
+           "form_id": form_id, "ok": True, "out_pdf": str(out_pdf),
            "mapped_keys": res["mapped_keys"], "resolved": res["resolved"],
            "coverage": (round(res["resolved"] / res["mapped_keys"], 3)
                         if res["mapped_keys"] else 0.0),

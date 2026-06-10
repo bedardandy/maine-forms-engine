@@ -65,6 +65,58 @@ All path defaults are the shared repo layout relative to the cwd
 (`forms/`, `catalog/pdf_manifest.json`); pass `forms_root=` / `--forms-root`
 / `--manifest` explicitly from anywhere else.
 
+## Radio groups — soft lock (yellow light, never written)
+
+The fill engine **never writes radio groups**. Same-named BUTTON widgets with
+distinct on-states (or any radio-typed widget) are detected by
+`fill.detect_radio_groups` — distinguishing them from same-named text
+continuation lines (the wrap path) and the court repos' legitimate same-named
+checkbox fan-out (one shared on-state) — and any value routed at one is
+skipped with a structured report entry instead of being wrapped as text:
+
+```json
+{"field_id": "residency_status", "kind": "radio_group",
+ "options": ["Resident", "Nonresident"], "suggested": "Nonresident",
+ "action": "manual selection required"}
+```
+
+A repo can declare the group in `mapping.json` so the suggestion resolves
+from the case without ever writing:
+
+```json
+"manual": {
+  "residency_status": {"fill": "manual", "kind": "radio_group",
+                        "key": "facts.residency_status",
+                        "options": ["Resident", "Nonresident"]}
+}
+```
+
+`fill_via_mapping` results then carry `radio_groups: [...]` (both result
+styles). This is deliberately a warning surface only — there is no
+radio-group write support.
+
+## Constraints — declarative checkbox paradoxes (warnings only)
+
+`maine_forms_engine.constraints` reads an optional **`constraints.json` next
+to a form's `mapping.json`** (that file, not a `mapping.json` block, is the
+documented home) declaring selections the printed form cannot logically carry
+at once:
+
+```json
+{"mutually_exclusive": [
+    {"keys": ["facts.resident", "facts.nonresident"],
+     "note": "Resident / Nonresident — single-status pair"}],
+ "requires": {"facts.designee_pin": ["facts.designee_name"]}}
+```
+
+Groups may carry `"inferred": true` (harvested, not literally printed as
+"check one") and a `"note"`. `constraints.evaluate(case_or_resolved_values)`
+returns `[{code: "MUTUALLY_EXCLUSIVE"|"REQUIRES", keys, severity: "warning",
+note?, inferred?}]`; `fill_via_mapping` surfaces it as
+`constraint_warnings` in the fill result. **Warnings only, never blocking**:
+no constraints file means zero behavior change, and a firing constraint never
+alters the written PDF.
+
 ## The MCP backend adapter
 
 A consuming repo's `tools/agent_server.py` shrinks to a backend object plus
