@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bedardandy/maine-forms-engine/specs/pdf_manifest.schema.json",
+  "title": "pdf_manifest.json — pinned-revision manifest for blank source PDFs",
+  "description": "The shared manifest dialect read by maine_forms_engine.drift (check_upstream / fetch_pdfs) and maine_forms_engine.fill.verify. Each form's blank PDF is pinned to the exact revision its mapping/schema/field inventory was built against, by SHA-256 and byte size, with the official URL to re-fetch it. The repos do not redistribute the blanks; this manifest is what makes an on-demand fetch provably the same document. NOTE: maine-corporation-forms currently ships a forked dialect ({\"pdfs\": [...]}); converging it onto this shape is its migration step.",
+  "type": "object",
+  "required": ["forms"],
+  "properties": {
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Optional convenience count of entries in \"forms\"."
+    },
+    "endpoint_pattern": {
+      "type": "string",
+      "description": "Optional URL template the per-form urls were derived from (e.g. a portal's parametrized download endpoint with a {} placeholder)."
+    },
+    "forms": {
+      "type": "object",
+      "description": "Keyed by form id (e.g. \"AD-001\", \"IRS-SS-4\").",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["url", "sha256", "bytes"],
+        "properties": {
+          "url": {
+            "type": "string",
+            "pattern": "^https?://",
+            "description": "Official source URL the blank is fetched from."
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "SHA-256 (lowercase hex) of the pinned blank-PDF revision."
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Byte size of the pinned revision (cheap pre-hash check)."
+          },
+          "num_pages": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Optional page count of the pinned revision."
+          },
+          "has_acroform": {
+            "type": "boolean",
+            "description": "Optional: whether the pinned revision carries AcroForm widgets."
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "count": 1,
+      "forms": {
+        "AD-001": {
+          "bytes": 284593,
+          "sha256": "8279f5cbd84b6c6a90c23673d355b0dae980c1bcc6783c54b4c84188c4cb0d93",
+          "url": "https://mjbportal.courts.maine.gov/CourtForms/FormsLists/DownloadForm?strFormNumber=AD-001"
+        }
+      }
+    }
+  ]
+}
