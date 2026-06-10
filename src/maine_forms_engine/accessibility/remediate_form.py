@@ -204,7 +204,9 @@ def remediate(inp, outp, schema_path, lang, title, *, naming="caption"):
     return done, final_title
 
 
-def main():
+def main(argv=None, *, default_naming="caption"):
+    """CLI entry point. ``argv`` / ``default_naming`` exist for consumer-repo
+    shims (the probate repo pins ``default_naming="schema-label"``)."""
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pdf")
@@ -212,11 +214,11 @@ def main():
     ap.add_argument("--schema", required=True)
     ap.add_argument("--lang", default="en-US")
     ap.add_argument("--title", default=None)
-    ap.add_argument("--naming", default="caption",
+    ap.add_argument("--naming", default=default_naming,
                     choices=["caption", "schema-label"],
                     help="/TU naming strategy (caption = court donor behavior; "
                          "schema-label = probate behavior)")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     if pathlib.Path(a.out).resolve() == pathlib.Path(a.pdf).resolve():
         print("refusing to overwrite the original", file=sys.stderr)
         return 2
