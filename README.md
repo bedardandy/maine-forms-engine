@@ -117,6 +117,49 @@ note?, inferred?}]`; `fill_via_mapping` surfaces it as
 no constraints file means zero behavior change, and a firing constraint never
 alters the written PDF.
 
+## Computations — declarative computed fields (the PDF stays dumb)
+
+`maine_forms_engine.computations` reads an optional **`computations.json`
+next to a form's `mapping.json`** declaring the arithmetic the form itself
+prints ("Add lines 7a, 7b and 7c.", "Subtract line 2i from line 1j"):
+
+```json
+{"computed": {
+    "facts.total_payments": {
+      "op": "sum",
+      "inputs": ["facts.maine_income_tax_withheld",
+                  "facts.estimated_tax_payments",
+                  "facts.refundable_tax_credits"],
+      "formula_text": "d. Total payments. (Add lines 7a, 7b and 7c.)"}}}
+```
+
+Ops are deliberately tiny: `sum` (inputs may carry a `"-"` prefix for
+"line 1 minus line 2 plus line 3"), `difference` (first minus the rest),
+`product`; optional `round` (decimal places) and `floor` (only when the form
+prints a clamp like "If zero or less, enter -0-"). `formula_text` must be the
+**verbatim printed instruction** — formulas are anti-fabrication-gated to
+text on the form (no statutory rates or fee schedules from memory); anything
+not verbatim carries `"inferred": true`.
+
+`fill_via_mapping` behavior (both result styles):
+
+- target key **omitted** + all inputs present → the value is computed and
+  filled, reported under `computed_fields: [{key, kind: "computed", value,
+  formula_text}]`.
+- target key **supplied** but contradicting → the supplied value is written
+  **as-is** (never enforced/overridden) and `computation_warnings` carries
+  `{code: "COMPUTATION_MISMATCH", key, supplied, computed, formula_text,
+  severity: "warning"}`.
+- an input missing → skipped silently; present but unparseable → skipped
+  with a `computation_notes` entry, never guessed.
+
+Evaluation is topological (computed values feed later computations; a cycle
+is a load error), parsing is deterministic (`"$1,234.56"`, commas,
+parentheses-negatives), comparison tolerates formatting ("1300" vs
+"1,300.00"), and computed output mimics the input values' formatting style.
+**Nothing is embedded in the PDF** — no AcroForm calculation JavaScript, no
+field locking; no computations file means zero behavior change.
+
 ## The MCP backend adapter
 
 A consuming repo's `tools/agent_server.py` shrinks to a backend object plus

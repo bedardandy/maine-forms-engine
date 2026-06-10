@@ -197,9 +197,35 @@ def resolve_mapping(form_id: str, facts: dict,
             fid_value[fid] = v
         else:
             unresolved.append((fid, key))
+    # Computed fields (computations.json next to mapping.json; see
+    # maine_forms_engine.computations): a target the case omits is computed
+    # from the form's own printed arithmetic and filled; a supplied value is
+    # written AS-IS — a contradiction only yields a COMPUTATION_MISMATCH
+    # warning. No computations file = no keys, zero behavior change.
+    from ..computations import evaluate as _eval_computations
+    from ..computations import load_computations as _load_computations
+    _computations = _load_computations(fdir)
+    _comp_extra: dict = {}
+    if _computations is not None:
+        _comp = _eval_computations(_computations, facts)
+        _by_key = {e["key"]: e for e in _comp["computed"]}
+        _filled_keys, _still = set(), []
+        for fid, key in unresolved:
+            if key in _by_key:
+                fid_value[fid] = _by_key[key]["value"]
+                _filled_keys.add(key)
+            else:
+                _still.append((fid, key))
+        unresolved = _still
+        _comp_extra["computed_fields"] = [e for e in _comp["computed"]
+                                          if e["key"] in _filled_keys]
+        _comp_extra["computation_warnings"] = _comp["warnings"]
+        if _comp["notes"]:
+            _comp_extra["computation_notes"] = _comp["notes"]
     schema = json.loads((fdir / "schema.json").read_text())
     total_fields = len(schema.get("fields", []))
     out = {
+        **_comp_extra,
         "form_id": form_id,
         "status": mapping.get("status"),
         "total_fields": total_fields,
@@ -378,6 +404,13 @@ def fill_via_mapping(form_id: str, facts: dict, out_dir: pathlib.Path,
         _extra["radio_groups"] = list(radio_entries.values())
     if _constraints is not None:
         _extra["constraint_warnings"] = _eval_constraints(_constraints, facts)
+    # Yellow light #3 — computed fields (computations.json; resolved by
+    # resolve_mapping). Computed values were filled; supplied values were
+    # written as-is, contradictions surface as COMPUTATION_MISMATCH.
+    for _k in ("computed_fields", "computation_warnings",
+               "computation_notes"):
+        if _k in res:
+            _extra[_k] = res[_k]
     if result_style == "tax":
         return {
             **_extra,

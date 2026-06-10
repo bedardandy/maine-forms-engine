@@ -9,4 +9,4 @@ documented path-parameter and import changes in CHANGES_FROM_DONOR.md.
 NOT legal advice — see DISCLAIMER.md.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

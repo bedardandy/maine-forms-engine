@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "maine-forms-engine"
-version = "0.2.0"
+version = "0.3.0"
 description = "Shared AcroForm fill engine, upstream-drift guard, PDF/UA accessibility remediation, and MCP scaffold for the Maine forms repos"
 readme = "README.md"
 requires-python = ">=3.12"
