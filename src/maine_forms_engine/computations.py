@@ -27,11 +27,15 @@ formulas over canonical fact keys:
 
 Per-target spec fields:
 
-- ``op``: ``"sum"`` | ``"difference"`` | ``"product"``. ``difference`` is the
-  first input minus all the rest; ``sum`` inputs may carry a ``"-"`` prefix
-  ("line 1 minus line 2 plus line 3" → ``["facts.l1", "-facts.l2",
-  "facts.l3"]``). The vocabulary is deliberately tiny — it covers what the
-  surveyed forms literally print, nothing speculative.
+- ``op``: ``"sum"`` | ``"difference"`` | ``"product"`` | ``"min"``.
+  ``difference`` is the first input minus all the rest; ``sum`` inputs may
+  carry a ``"-"`` prefix ("line 1 minus line 2 plus line 3" →
+  ``["facts.l1", "-facts.l2", "facts.l3"]``); ``min`` is the least input
+  ("Enter the least of the amounts of lines (4), (6) or (7)"). An input may
+  also be a JSON number — a literal constant, used ONLY for a multiplier the
+  form itself prints ("Multiply amount on line (3) by .25" →
+  ``["facts.line_3", 0.25]``). The vocabulary is deliberately tiny — it
+  covers what the surveyed forms literally print, nothing speculative.
 - ``formula_text``: the **verbatim printed instruction** (anti-fabrication:
   every formula must trace to text printed on the form; quote it). Anything
   not verbatim must carry ``"inferred": true``.
@@ -70,7 +74,7 @@ from decimal import Decimal
 
 COMPUTATIONS_FILENAME = "computations.json"
 
-_OPS = ("sum", "difference", "product")
+_OPS = ("sum", "difference", "product", "min")
 
 # |supplied - computed| <= tolerance is "equal" — formatting noise, not a
 # contradiction (half a cent absorbs decimal-rendering differences).
@@ -122,8 +126,11 @@ def _resolve(key: str, values: dict) -> object:
     return cur
 
 
-def _input_key(raw: str) -> tuple[str, int]:
-    """Split an input entry into (key, sign): ``"-facts.x"`` → ("facts.x", -1)."""
+def _input_key(raw) -> tuple[str | None, int]:
+    """Split an input entry into (key, sign): ``"-facts.x"`` → ("facts.x", -1).
+    A JSON-number input is a printed literal constant: (None, +1)."""
+    if isinstance(raw, (int, float)):
+        return None, 1
     if raw.startswith("-"):
         return raw[1:], -1
     return raw, 1
@@ -141,9 +148,17 @@ def _validate(computed: dict) -> None:
         if not isinstance(inputs, list) or not inputs:
             raise ValueError(f"computations: {key}: inputs must be a "
                              "non-empty list of keys")
-        if op != "sum" and any(i.startswith("-") for i in inputs):
+        for i in inputs:
+            if isinstance(i, bool) or not isinstance(i, (str, int, float)):
+                raise ValueError(f"computations: {key}: input {i!r} must be "
+                                 "a key string or a printed literal number")
+        if op != "sum" and any(isinstance(i, str) and i.startswith("-")
+                               for i in inputs):
             raise ValueError(f"computations: {key}: signed '-' inputs are "
                              "only meaningful for op 'sum'")
+        if all(not isinstance(i, str) for i in inputs):
+            raise ValueError(f"computations: {key}: at least one input must "
+                             "be a fact key")
         if not (spec.get("formula_text") or "").strip():
             raise ValueError(f"computations: {key}: formula_text (the "
                              "verbatim printed instruction) is required")
@@ -197,7 +212,7 @@ def _format_like(result: Decimal, samples: list[str],
     inputs carry them (or ``round`` forces decimal places)."""
     if places is None:
         places = max((_decimal_places(s) for s in samples), default=0)
-        frac = -result.as_tuple().exponent
+        frac = -result.normalize().as_tuple().exponent
         places = max(places, max(frac, 0))
     q = result.quantize(Decimal(1).scaleb(-places)) if places >= 0 else result
     commas = any("," in s for s in samples)
@@ -235,6 +250,9 @@ def evaluate(computations: dict | None, values: dict) -> dict:
         terms, samples, skip = [], [], False
         for raw in spec["inputs"]:
             ik, sign = _input_key(raw)
+            if ik is None:  # printed literal constant (e.g. a multiplier)
+                terms.append((1, Decimal(str(raw))))
+                continue
             v = lookup(ik)
             if v is None or v == "":
                 skip = True  # input missing → skip silently
@@ -252,7 +270,9 @@ def evaluate(computations: dict | None, values: dict) -> dict:
         if skip:
             continue
         op = spec["op"]
-        if op == "product":
+        if op == "min":
+            result = min(a for _, a in terms)
+        elif op == "product":
             result = Decimal(1)
             for _, a in terms:
                 result *= a

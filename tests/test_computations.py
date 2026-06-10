@@ -45,6 +45,17 @@ def test_sum_difference_product():
     assert r["computed"][0]["value"] == "42"
 
 
+def test_min_and_literal_constant_inputs():
+    # "Enter the least of the amounts of lines (4), (6) or (7):"
+    r = _one("min", ["facts.a", "facts.b", "facts.c"],
+             {"facts": {"a": "120", "b": "75.50", "c": "300"}})
+    assert r["computed"][0]["value"] == "75.50"
+    # "Multiply amount on line (3) by .25 and enter answer here:"
+    r = _one("product", ["facts.disposable", 0.25],
+             {"facts": {"disposable": "1000"}})
+    assert r["computed"][0]["value"] == "250"
+
+
 def test_signed_sum_inputs():
     # "line 1 minus line 2 plus line 3"
     r = _one("sum", ["facts.l1", "-facts.l2", "facts.l3"],
@@ -163,6 +174,10 @@ def test_unknown_op_and_malformed_specs_are_load_errors(tmp_path):
                  {"op": "sum", "inputs": [], "formula_text": "x"},
                  {"op": "sum", "inputs": ["facts.a"]},
                  {"op": "difference", "inputs": ["facts.a", "-facts.b"],
+                  "formula_text": "x"},
+                 {"op": "product", "inputs": [0.25, 2],
+                  "formula_text": "x"},
+                 {"op": "sum", "inputs": ["facts.a", True],
                   "formula_text": "x"}):
         (tmp_path / "computations.json").write_text(
             json.dumps({"computed": {"facts.t": spec}}))
