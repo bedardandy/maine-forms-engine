@@ -1,0 +1,23 @@
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test,mcp]"
+      - name: Run test suite
+        # Fully offline: fixture AcroForms are synthesized in-test with
+        # PyMuPDF (no official blanks are committed or fetched).
+        run: python -m pytest tests/ -v

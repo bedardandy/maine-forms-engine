@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maine-forms-engine"
+version = "0.1.0"
+description = "Shared AcroForm fill engine, upstream-drift guard, PDF/UA accessibility remediation, and MCP scaffold for the Maine forms repos"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "bedardandy" }]
+keywords = ["pdf", "acroform", "forms", "maine", "accessibility", "pdf-ua"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Legal Industry",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Office/Business",
+]
+# Pinned-loose: what the donor modules actually import.
+dependencies = [
+  "PyMuPDF>=1.24,<2",     # fitz — fill path, verify_fill, caption geometry
+  "pikepdf>=8.0,<11",     # field_split + all accessibility remediation
+  "fonttools>=4.50,<5",   # embed_widget_font / make_zapf_ttf
+]
+
+[project.optional-dependencies]
+mcp = ["mcp[cli]>=1.0"]       # only to run the MCP scaffold (server.build_server)
+test = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/bedardandy/maine-forms-engine"
+"Consumer: maine-court-forms" = "https://github.com/bedardandy/maine-court-forms"
+"Consumer: transactional-tax-forms" = "https://github.com/bedardandy/transactional-tax-forms"
+"Consumer: maine-corporation-forms" = "https://github.com/bedardandy/maine-corporation-forms"
+"Consumer: maine-probate-forms" = "https://github.com/bedardandy/maine-probate-forms"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
