@@ -92,7 +92,7 @@ DEFAULT_UPDATE_HINT = "Re-run mapping + audit for each before publishing."
 def main(argv=None, *, default_manifest: pathlib.Path | None = None,
          update_hint: str | None = None, downloader=None,
          on_download_error=None, entry_filter=None,
-         default_retries: int = 3) -> int:
+         default_retries: int = 3, default_timeout: int = 30) -> int:
     """CLI entry point.
 
     The keyword hooks exist for consumer-repo shims:
@@ -107,11 +107,12 @@ def main(argv=None, *, default_manifest: pathlib.Path | None = None,
     - ``entry_filter`` (``(form_id, entry) -> bool``) restricts the default
       (no ``--forms``) probe set — e.g. the corp repo probes only manifest
       entries flagged ``"fetch": true``.
-    - ``default_retries`` overrides the donor's ``--retries`` default.
+    - ``default_retries`` / ``default_timeout`` override the donor's
+      ``--retries`` / ``--timeout`` defaults.
     """
     ap = argparse.ArgumentParser(description="Detect upstream revisions of the blank PDFs")
     ap.add_argument("--forms", help="comma-separated form ids (default: all)")
-    ap.add_argument("--timeout", type=int, default=30)
+    ap.add_argument("--timeout", type=int, default=default_timeout)
     ap.add_argument("--retries", type=int, default=default_retries)
     ap.add_argument("--json", action="store_true", help="emit a JSON report")
     ap.add_argument("--update-manifest", action="store_true",

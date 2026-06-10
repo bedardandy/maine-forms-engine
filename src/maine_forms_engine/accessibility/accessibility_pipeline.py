@@ -127,20 +127,27 @@ def validate(pdf):
     return "\n".join(out)
 
 
-def main():
+def main(argv=None, *, default_naming="caption"):
+    """CLI entry point. ``argv`` / ``default_naming`` exist for consumer-repo
+    shims: the probate repo pins ``default_naming="schema-label"`` (its
+    schema labels are already human-readable accessible names)."""
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pdf"); ap.add_argument("out")
     ap.add_argument("--schema", required=True)
     ap.add_argument("--lang", default="en-US"); ap.add_argument("--title", default=None)
+    ap.add_argument("--naming", default=default_naming,
+                    choices=["caption", "schema-label"],
+                    help="/TU naming strategy (see remediate_form)")
     ap.add_argument("--validate", action="store_true")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     if pathlib.Path(a.out).resolve() == pathlib.Path(a.pdf).resolve():
         print("refusing to overwrite the original", file=sys.stderr); return 2
 
     tmp = pathlib.Path(tempfile.mkdtemp())
     step1 = tmp / "step1.pdf"
-    done, title = remediate_form.remediate(a.pdf, str(step1), a.schema, a.lang, a.title)
+    done, title = remediate_form.remediate(a.pdf, str(step1), a.schema, a.lang,
+                                           a.title, naming=a.naming)
     print(f"[1/3] field names {done['tu_set']}/{done['tu_total']}, title '{title}', "
           f"/Lang {a.lang}, tab order")
     # OpenDataLoader builds the content tag tree (7.1/7.2). It's an optional dep;

@@ -150,3 +150,12 @@ behavior unless a consumer opts in):
   the package (package data + `specs.pdf_manifest_schema()` loader) so a
   consumer repo can validate its converted manifest in CI. The prose
   canonical-fact-object spec stays in the repo `specs/` directory.
+
+## Probate-migration extensions (2026-06-10)
+
+- `drift/check_upstream.py` — `main` gains `default_timeout` (probate probes
+  maineprobate.net with 40s).
+- `accessibility/accessibility_pipeline.py` — `main` gains `argv` /
+  `default_naming` and a `--naming` CLI flag, so the probate shim's pipeline
+  remediates with its `schema-label` /TU strategy. Default unchanged
+  (`caption`, the court donor behavior).
