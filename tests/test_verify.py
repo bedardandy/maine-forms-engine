@@ -95,6 +95,64 @@ class CheckUpstream(unittest.TestCase):
                 "C", {"sha256": _sha(b"x"), "bytes": 1, "url": "gone"},
                 1, 1)["status"], "GONE")
 
+    def test_on_download_error_hook_classifies_transients(self):
+        """The corp repo's policy: timeouts/5xx are ERROR (non-gating), only
+        a definitive 404/410 is GONE."""
+        import urllib.error
+
+        import maine_forms_engine.drift.check_upstream as cu
+
+        def classify(e):
+            if isinstance(e, urllib.error.HTTPError) and e.code in (404, 410):
+                return "GONE"
+            return "ERROR"
+
+        def fake_download(url, timeout, retries):
+            if "gone" in url:
+                raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+            if "outage" in url:
+                raise urllib.error.HTTPError(url, 503, "Service Unavailable",
+                                             None, None)
+            raise TimeoutError("timed out")
+
+        with mock.patch.object(cu, "_download", fake_download):
+            def status(url):
+                return cu.check_one(
+                    "A", {"sha256": _sha(b"x"), "bytes": 1, "url": url},
+                    1, 1, on_download_error=classify)["status"]
+            self.assertEqual(status("gone"), "GONE")
+            self.assertEqual(status("outage"), "ERROR")
+            self.assertEqual(status("flake"), "ERROR")
+            # default (no hook) stays the donor behavior: everything is GONE
+            self.assertEqual(cu.check_one(
+                "A", {"sha256": _sha(b"x"), "bytes": 1, "url": "outage"},
+                1, 1)["status"], "GONE")
+
+    def test_main_entry_filter_and_error_gating(self):
+        """entry_filter restricts the default probe set; ERROR never gates."""
+        import maine_forms_engine.drift.check_upstream as cu
+        with tempfile.TemporaryDirectory() as td:
+            man = pathlib.Path(td) / "pdf_manifest.json"
+            man.write_text(json.dumps({"forms": {
+                "A": {"url": "https://x/a", "sha256": _sha(b"a"), "bytes": 1,
+                      "fetch": True},
+                "B": {"url": "https://x/b", "sha256": _sha(b"b"), "bytes": 1},
+            }}))
+            calls = []
+
+            def fake_download(url, timeout, retries):
+                calls.append(url)
+                raise TimeoutError("timed out")
+
+            rc = cu.main(
+                ["--manifest", str(man), "--json"],
+                downloader=fake_download,
+                on_download_error=lambda e: "ERROR",
+                entry_filter=lambda fid, e: e.get("fetch"))
+            # only the fetchable entry was probed, and ERROR did not gate
+            self.assertEqual(calls, ["https://x/a"])
+            self.assertEqual(rc, 0)
+
     def test_non_pdf_response_is_gone_not_changed(self):
         """The %PDF- guard: an HTML error page must NOT classify as CHANGED
         with adoptable hashes (the corp-repo bug this package eliminates)."""
@@ -120,9 +178,8 @@ class FetchVerify(unittest.TestCase):
 
 class ManifestSpec(unittest.TestCase):
     def test_spec_example_matches_what_the_tools_read(self):
-        spec = json.loads(
-            (pathlib.Path(__file__).resolve().parent.parent / "specs" /
-             "pdf_manifest.schema.json").read_text())
+        from maine_forms_engine.specs import pdf_manifest_schema
+        spec = pdf_manifest_schema()
         example = spec["examples"][0]
         # the exact fields verify/check_upstream/fetch_pdfs consume
         for fid, e in example["forms"].items():

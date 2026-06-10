@@ -36,7 +36,7 @@ PyMuPDF, pikepdf, fontTools (and optionally `mcp` for the agent server).
 | `maine_forms_engine.drift` | `check_upstream` (re-probe official URLs vs manifest; `%PDF-` non-PDF guard; `--update-manifest`), `fetch_pdfs` (verified on-demand fetch — repos never redistribute blanks) | court `tools/` |
 | `maine_forms_engine.accessibility` | `accessibility_pipeline` (remediate -> OpenDataLoader tag tree -> PDF/UA stamp -> veraPDF), `remediate_form` (title//Lang//Tabs + **pluggable /TU naming strategy**), `embed_widget_font` (base-14 -> Liberation embedding + ToUnicode), `make_zapf_ttf` | court `tools/accessibility/` |
 | `maine_forms_engine.mcp` | standardized agent scaffold: `find_forms / get_form / plan_fill / fill_form` with one error shape; the repo supplies a backend adapter | new (consolidates 4 server dialects) |
-| `specs/` | the canonical fact-object spec + a JSON Schema for the `{"forms": {...}}` `pdf_manifest.json` dialect | tax `docs/integrations/` |
+| `specs/` + `maine_forms_engine.specs` | the canonical fact-object spec (prose, repo `specs/`) + a JSON Schema for the `{"forms": {...}}` `pdf_manifest.json` dialect (shipped as package data; `specs.pdf_manifest_schema()`) | tax `docs/integrations/` |
 
 Stays per-repo (deliberately not absorbed): `forms/` artifacts + catalogs,
 court recipes + `fill_and_audit` + addendum renderer, corp rubric/when-gating
@@ -115,7 +115,8 @@ byte-identical subset first, then the donor, then the real divergence work).
 3. **maine-corporation-forms** — consumes only `drift` + the `mcp` scaffold
    initially. Its divergences are real migration work, not drop-in: a forked
    `{"pdfs": [...]}` manifest (convert to the `{"forms": {...}}` dialect in
-   `specs/pdf_manifest.schema.json` to use `drift`), an **inverted** mapping
+   the `{"forms": {...}}` dialect of `maine_forms_engine.specs/
+   pdf_manifest.schema.json` to use `drift`), an **inverted** mapping
    direction (`{"fields": {canonical_key: {widget_id, confidence}}}`), a flat
    `entity.*`/`clerk.*`/`filing.*` case shape (vs the canonical fact object),
    and a pypdf fill engine (vs PyMuPDF) — so `fill` stays out of corp until

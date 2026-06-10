@@ -35,19 +35,28 @@ DEFAULT_MANIFEST = pathlib.Path("catalog") / "pdf_manifest.json"
 
 
 def check_one(fid: str, entry: dict, timeout: int, retries: int,
-              downloader=None) -> dict:
+              downloader=None, on_download_error=None) -> dict:
     """Probe one form's official URL and classify it against the manifest.
 
     ``downloader`` (a ``(url, timeout, retries) -> bytes`` callable) lets a
     consumer shim route through its own download helper — e.g. so its tests
-    can keep stubbing ``tools.check_upstream._download``."""
+    can keep stubbing ``tools.check_upstream._download``.
+
+    ``on_download_error`` (an ``(exception) -> status_str`` callable) lets a
+    consumer refine how a failed download classifies. The default is the
+    donor behavior: every failure is ``"GONE"``. The corp repo returns
+    ``"ERROR"`` for transient failures (timeout, DNS, HTTP 5xx) and reserves
+    ``"GONE"`` for a definitive 404/410, so a scheduled run does not
+    false-alarm on network flake — ``"ERROR"`` results never gate
+    ``main()``'s exit code."""
     url = entry.get("url")
     if not url:
         return {"form_id": fid, "status": "NO_URL"}
     try:
         data = (downloader or _download)(url, timeout, retries)
     except Exception as e:  # noqa: BLE001
-        return {"form_id": fid, "status": "GONE", "detail": str(e)[:160]}
+        status = on_download_error(e) if on_download_error else "GONE"
+        return {"form_id": fid, "status": status, "detail": str(e)[:160]}
     if data[:5] != b"%PDF-":
         return {"form_id": fid, "status": "GONE",
                 "detail": "response is not a PDF (error/HTML page)"}
@@ -81,18 +90,29 @@ DEFAULT_UPDATE_HINT = "Re-run mapping + audit for each before publishing."
 
 
 def main(argv=None, *, default_manifest: pathlib.Path | None = None,
-         update_hint: str | None = None, downloader=None) -> int:
+         update_hint: str | None = None, downloader=None,
+         on_download_error=None, entry_filter=None,
+         default_retries: int = 3) -> int:
     """CLI entry point.
 
-    ``argv`` / ``default_manifest`` / ``update_hint`` exist for consumer-repo
-    shims: a shim pins ``default_manifest`` to its repo manifest and supplies
-    its own post-``--update-manifest`` guidance (e.g. the tax repo points at
-    its ``tools/build_manifest.py`` re-inventory step).
+    The keyword hooks exist for consumer-repo shims:
+
+    - ``default_manifest`` pins the repo's manifest path; ``update_hint``
+      supplies the post-``--update-manifest`` guidance (e.g. the tax repo
+      points at its ``tools/build_manifest.py`` re-inventory step).
+    - ``on_download_error`` refines failed-download classification (see
+      :func:`check_one`). Results classified ``"ERROR"`` (transient) are
+      reported — an ``errors`` list in the JSON report, an ``errors=`` count
+      in the summary — but never gate the exit code.
+    - ``entry_filter`` (``(form_id, entry) -> bool``) restricts the default
+      (no ``--forms``) probe set — e.g. the corp repo probes only manifest
+      entries flagged ``"fetch": true``.
+    - ``default_retries`` overrides the donor's ``--retries`` default.
     """
     ap = argparse.ArgumentParser(description="Detect upstream revisions of the blank PDFs")
     ap.add_argument("--forms", help="comma-separated form ids (default: all)")
     ap.add_argument("--timeout", type=int, default=30)
-    ap.add_argument("--retries", type=int, default=3)
+    ap.add_argument("--retries", type=int, default=default_retries)
     ap.add_argument("--json", action="store_true", help="emit a JSON report")
     ap.add_argument("--update-manifest", action="store_true",
                     help="adopt the new sha256/bytes (and num_pages/"
@@ -116,16 +136,23 @@ def main(argv=None, *, default_manifest: pathlib.Path | None = None,
         ids = want
     else:
         ids = sorted(forms)
+        if entry_filter is not None:
+            ids = [f for f in ids if entry_filter(f, forms[f])]
 
     results = [check_one(f, forms[f], args.timeout, args.retries,
-                         downloader=downloader) for f in ids]
+                         downloader=downloader,
+                         on_download_error=on_download_error) for f in ids]
 
     changed = [r for r in results if r["status"] == "CHANGED"]
     gone = [r for r in results if r["status"] == "GONE"]
+    errors = [r for r in results if r["status"] == "ERROR"]
     ok = [r for r in results if r["status"] == "ok"]
 
     if args.json:
-        print(json.dumps({"ok": len(ok), "changed": changed, "gone": gone}, indent=2))
+        report = {"ok": len(ok), "changed": changed, "gone": gone}
+        if on_download_error is not None:
+            report["errors"] = errors
+        print(json.dumps(report, indent=2))
     else:
         for r in results:
             if r["status"] == "ok":
@@ -137,10 +164,14 @@ def main(argv=None, *, default_manifest: pathlib.Path | None = None,
                       f"Re-map before trusting fills.")
             elif r["status"] == "GONE":
                 print(f"  GONE     {r['form_id']}: {r.get('detail', 'download failed')}")
+            elif r["status"] == "ERROR":
+                print(f"  ERROR    {r['form_id']}: {r.get('detail', 'download failed')} "
+                      f"(transient — does not gate; re-run)")
             else:
                 print(f"  {r['status']:<8} {r['form_id']}")
-        print(f"\nok={len(ok)} changed={len(changed)} gone={len(gone)} "
-              f"checked={len(results)}")
+        tail = (f" errors={len(errors)}" if on_download_error is not None else "")
+        print(f"\nok={len(ok)} changed={len(changed)} gone={len(gone)}"
+              f"{tail} checked={len(results)}")
 
     if args.update_manifest and changed:
         for r in changed:

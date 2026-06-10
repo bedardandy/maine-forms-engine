@@ -131,3 +131,19 @@ default still matches the court donor, the tax consumer opts in:
 Tests: tax's BuiltAgainstSha pair ported (drifted refused / matching
 resolves), plus allowlist-gate, tax result-style, report/policy-gate, and
 extra_tools coverage. Version stays 0.1.0 (pre-release).
+
+## Corp-migration extensions (2026-06-10)
+
+Added for the maine-corporation-forms shim (defaults unchanged — donor
+behavior unless a consumer opts in):
+
+- `drift/check_upstream.py` — `check_one`/`main` gain `on_download_error`
+  (refine failed-download classification; corp maps transient timeout/DNS/
+  HTTP-5xx to `ERROR`, which is reported but never gates the exit code,
+  reserving `GONE` for a definitive 404/410 or a non-PDF response);
+  `main` gains `entry_filter` (restrict the default probe set, e.g. corp's
+  `"fetch": true` flag) and `default_retries`.
+- `maine_forms_engine.specs` — `pdf_manifest.schema.json` now ships inside
+  the package (package data + `specs.pdf_manifest_schema()` loader) so a
+  consumer repo can validate its converted manifest in CI. The prose
+  canonical-fact-object spec stays in the repo `specs/` directory.
