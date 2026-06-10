@@ -101,3 +101,40 @@ def test_list_form_fields(blank_pdf):
     assert by_name["name_field"]["field_type"] == "text"
     # the shared-name group contributes two widget entries
     assert sum(1 for f in fields if f["field_name"] == "narrative") == 2
+
+
+def test_return_report_dict(blank_pdf, out):
+    """The tax-consumer contract: return_report=True yields the result dict
+    (ported from transactional-tax-forms tests/test_engine_offline.py)."""
+    data = {
+        "name_field": "Example LLC",
+        "addr_field": "123 Main St, Portland, ME 04101",
+        "consent_box": "yes",
+        "ghost_field": "value with no widget",
+    }
+    res = fill_form(blank_pdf, data, out, return_report=True)
+    assert res["missing_fields"] == ["ghost_field"]
+    assert res["filled_count"] == 3
+    assert res["output_path"] == str(out)
+
+
+def test_supported_policies_gate_raises_up_front(blank_pdf, tmp_path):
+    """The tax-consumer policy: only 'none' is supported — any other
+    addendum policy is refused before the PDF is opened, even with no
+    overflow at all."""
+    with pytest.raises(ValueError):
+        fill_form(blank_pdf, {}, tmp_path / "x.pdf",
+                  addendum_policy="auto",
+                  supported_policies=frozenset({"none"}))
+    with pytest.raises(ValueError):
+        # a tree-level override is gated too
+        fill_form(blank_pdf, {}, tmp_path / "x.pdf",
+                  tree={"addendum_policy": "court_form"},
+                  supported_policies=frozenset({"none"}))
+
+
+def test_fill_form_from_json_report(blank_pdf, tmp_path, out):
+    case = tmp_path / "data.json"
+    case.write_text(json.dumps({"name_field": "From JSON"}))
+    res = fill_form_from_json(blank_pdf, case, out, return_report=True)
+    assert res["filled_count"] == 1

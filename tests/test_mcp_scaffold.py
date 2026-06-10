@@ -94,3 +94,24 @@ def test_build_server_registers_all_tools():
     tools = anyio.run(server.list_tools)
     assert {t.name for t in tools} == {"find_forms", "get_form",
                                        "plan_fill", "fill_form"}
+
+
+def test_extra_tools_registered_and_error_wrapped():
+    pytest.importorskip("mcp")
+
+    def preflight(form_id: str, case: dict) -> dict:
+        """Validate a case against the form's filing rules."""
+        if form_id != "T-1":
+            raise ValueError("bad form")
+        return {"errors": [], "warnings": []}
+
+    server = build_server(ListBackend(), extra_tools=[preflight])
+    import anyio
+    tools = anyio.run(server.list_tools)
+    assert "preflight" in {t.name for t in tools}
+
+    from maine_forms_engine.mcp.server import _wrap_extra
+    wrapped = _wrap_extra(preflight)
+    assert wrapped("T-1", {}) == {"ok": True, "errors": [], "warnings": []}
+    err = wrapped("NOPE", {})
+    assert err == {"ok": False, "error": "bad form", "error_type": "ValueError"}

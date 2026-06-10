@@ -35,7 +35,29 @@ from .text_fit import fit as _fit, widget_char_budget
 # the donor repo layout.
 DEFAULT_FORMS_ROOT = pathlib.Path("forms")
 
+# Default (court-donor) status handling is a blocklist: these two statuses are
+# refused, anything else fills. A consumer can instead pass an allowlist via
+# ``fillable_statuses`` (the transactional-tax-forms policy, e.g. refusing
+# "remap-pending" after upstream drift) and override/extend the reasons via
+# ``skip_reasons``.
+DEFAULT_SKIP_REASONS = {
+    "recipe": "mapping.json is a pointer; use engine.fill",
+    "no-mappable-fields": ("form has no mappable fields (informational/"
+                           "court-completed form); nothing to fill"),
+}
+_BLOCKED_STATUSES = frozenset(DEFAULT_SKIP_REASONS)
+
 _NAME_KEY_SUFFIX = (".full_name", ".first_name", ".middle_name", ".last_name")
+
+
+def _manifest_for(forms_root, manifest_path):
+    """The pinned-revision manifest for this tree: explicit ``manifest_path``,
+    else ``<forms_root>/../catalog/pdf_manifest.json`` (the shared repo
+    layout), else ``None`` (verify falls back to its cwd-relative default)."""
+    if manifest_path is not None:
+        return verify.load_manifest(manifest_path)
+    p = pathlib.Path(forms_root).resolve().parent / "catalog" / "pdf_manifest.json"
+    return verify.load_manifest(p) if p.exists() else None
 
 
 def _width_fit(fid_value: dict, fid_key: dict, rect_by_fid: dict) -> dict:
@@ -116,21 +138,57 @@ def _resolve_key(key: str, facts: dict) -> str | None:
 
 
 def resolve_mapping(form_id: str, facts: dict,
-                    forms_root: pathlib.Path = DEFAULT_FORMS_ROOT) -> dict:
+                    forms_root: pathlib.Path = DEFAULT_FORMS_ROOT, *,
+                    fillable_statuses: frozenset | set | None = None,
+                    skip_reasons: dict | None = None,
+                    require_built_against: bool = False,
+                    manifest_path: pathlib.Path | None = None) -> dict:
     """Resolve a form's mapping.json against a canonical fact object.
 
     Pure (no PDF needed): returns coverage stats + the field_id->value map.
+
+    Policy hooks (defaults = the court-donor behavior; the tax consumer
+    configures all three — see CHANGES_FROM_DONOR.md):
+
+    - ``fillable_statuses``: ``None`` (default) refuses only the blocklisted
+      statuses ("recipe", "no-mappable-fields"); a set makes it an allowlist —
+      any other status (e.g. "remap-pending", "unmapped") is refused with a
+      machine-readable reason instead of silently writing a partial fill.
+    - ``skip_reasons``: per-status overrides/additions to the refusal reasons.
+    - ``require_built_against``: when True, a mapping that records the blank
+      revision it was built against (``built_against_sha256``) is only
+      fillable while the manifest still pins that same revision. On drift the
+      status flag alone can lie (the tax repo's MRS-1041ME incident: status
+      said fillable while 37 mapped widgets no longer existed); the hash
+      comparison cannot. ``manifest_path`` overrides the manifest location
+      (default: ``<forms_root>/../catalog/pdf_manifest.json``).
     """
     fdir = forms_root / form_id
     mapping = json.loads((fdir / "mapping.json").read_text())
-    if mapping.get("status") == "recipe":
-        return {"form_id": form_id, "status": "recipe", "skipped": True,
-                "reason": "mapping.json is a pointer; use engine.fill"}
-    if mapping.get("status") == "no-mappable-fields":
-        return {"form_id": form_id, "status": "no-mappable-fields",
-                "skipped": True,
-                "reason": "form has no mappable fields (informational/"
-                          "court-completed form); nothing to fill"}
+    status = mapping.get("status")
+    reasons = {**DEFAULT_SKIP_REASONS, **(skip_reasons or {})}
+    refused = (status not in fillable_statuses
+               if fillable_statuses is not None
+               else status in _BLOCKED_STATUSES)
+    if refused:
+        reason = reasons.get(status) or (
+            f"mapping status {status!r} is not fillable (fillable statuses: "
+            f"{', '.join(sorted(fillable_statuses or ()))})")
+        return {"form_id": form_id, "status": status, "skipped": True,
+                "reason": reason}
+    if require_built_against:
+        built = (mapping.get("built_against_sha256") or "").lower()
+        if built:
+            manifest = _manifest_for(forms_root, manifest_path)
+            entry = verify.manifest_entry(form_id, manifest) if manifest else None
+            pinned = ((entry or {}).get("sha256") or "").lower()
+            if pinned and built != pinned:
+                return {
+                    "form_id": form_id, "status": status, "skipped": True,
+                    "reason": (f"mapping.json was built against blank revision "
+                               f"{built[:12]}… but catalog/pdf_manifest.json now "
+                               f"pins {pinned[:12]}… — the upstream blank "
+                               "drifted; re-map before filling")}
     m = mapping.get("map") or {}
     fid_value, unresolved = {}, []
     for fid, key in m.items():
@@ -155,11 +213,39 @@ def resolve_mapping(form_id: str, facts: dict,
 
 
 def fill_via_mapping(form_id: str, facts: dict, out_dir: pathlib.Path,
-                     forms_root: pathlib.Path = DEFAULT_FORMS_ROOT) -> dict:
-    """Resolve mapping.json and write a filled PDF."""
-    res = resolve_mapping(form_id, facts, forms_root)
+                     forms_root: pathlib.Path = DEFAULT_FORMS_ROOT, *,
+                     fillable_statuses: frozenset | set | None = None,
+                     skip_reasons: dict | None = None,
+                     require_built_against: bool = False,
+                     manifest_path: pathlib.Path | None = None,
+                     blank_verify_env: tuple = ("MCF_VERIFY_BLANK",),
+                     result_style: str = "court") -> dict:
+    """Resolve mapping.json and write a filled PDF.
+
+    Policy hooks: ``fillable_statuses`` / ``skip_reasons`` /
+    ``require_built_against`` / ``manifest_path`` pass through to
+    :func:`resolve_mapping`. ``blank_verify_env`` names the environment
+    variable(s) consulted (first one set wins) for the fill-time blank guard
+    mode — the tax consumer reads ``TTF_VERIFY_BLANK`` with
+    ``MCF_VERIFY_BLANK`` as a fallback. ``result_style`` selects the result
+    dialect the donors had diverged on:
+
+    - ``"court"`` (default): coverage ratio, ``unresolved`` as
+      ``[{"field_id", "key"}]``, ``fields_written`` = widgets *requested*,
+      ``blank_verify`` mode/ok/detail dict, and the zero-resolved loud
+      failure.
+    - ``"tax"``: ``unresolved`` as ``[[field_id, key]]``, ``fields_written``
+      = widgets *actually written* by the filler, plus ``missing_widgets`` /
+      ``overflowed`` diagnostics and a ``blank_verified`` bool.
+    """
+    res = resolve_mapping(form_id, facts, forms_root,
+                          fillable_statuses=fillable_statuses,
+                          skip_reasons=skip_reasons,
+                          require_built_against=require_built_against,
+                          manifest_path=manifest_path)
     if res.get("skipped"):
-        return {"form_id": form_id, "ok": False, "error": res["reason"]}
+        return {"form_id": form_id, "ok": False, "skipped": True,
+                "status": res.get("status"), "error": res["reason"]}
     fdir = forms_root / form_id
     pdf = fdir / f"{form_id}.pdf"
     if not pdf.exists():
@@ -167,13 +253,13 @@ def fill_via_mapping(form_id: str, facts: dict, out_dir: pathlib.Path,
                 "error": f"blank PDF not found: {pdf} (run tools/fetch_pdfs.py)"}
     # Guard: the on-disk blank must be the revision this mapping was built
     # against (catalog/pdf_manifest.json). A mismatch warns by default; set
-    # MCF_VERIFY_BLANK=strict to refuse, =off to skip. The outcome is also
-    # captured into the result dict (callers rarely see Python warnings).
-    blank_mode = os.environ.get("MCF_VERIFY_BLANK", "warn")
+    # <first blank_verify_env var>=strict to refuse, =off to skip. The outcome
+    # is captured into the result dict (callers rarely see Python warnings).
+    blank_mode = next((os.environ[v] for v in blank_verify_env
+                       if os.environ.get(v)), "warn")
     # Packaged change: resolve the manifest next to forms_root (the donor used
     # its repo-root manifest); falls back to verify's cwd-relative default.
-    _man_path = pathlib.Path(forms_root).resolve().parent / "catalog" / "pdf_manifest.json"
-    _manifest = verify.load_manifest(_man_path) if _man_path.exists() else None
+    _manifest = _manifest_for(forms_root, manifest_path)
     import warnings as _warnings
     with _warnings.catch_warnings(record=True) as _blank_warns:
         _warnings.simplefilter("always")
@@ -219,13 +305,29 @@ def fill_via_mapping(form_id: str, facts: dict, out_dir: pathlib.Path,
             "pip install pikepdf to enable the split guard", form_id,
             split_skipped)
     out_pdf = out_dir / f"{form_id}.filled.pdf"
-    fill_form(str(pdf), field_data, str(out_pdf),
-              form_id=form_id, addendum_policy="none")
+    fill_res = fill_form(str(pdf), field_data, str(out_pdf),
+                         form_id=form_id, addendum_policy="none",
+                         return_report=True)
     if n_split:  # drop the split working copy; the deliverable is .filled.pdf
         try:
             (out_dir / f"{form_id}.split.pdf").unlink()
         except OSError:
             pass
+    if result_style == "tax":
+        return {
+            "form_id": form_id, "ok": True, "status": res["status"],
+            "out_pdf": str(out_pdf),
+            "mapped_keys": res["mapped_keys"], "resolved": res["resolved"],
+            # canonical keys that resolved to nothing in the case object
+            "unresolved": [list(u) for u in res["unresolved"]],
+            # widgets actually written, counted by the filler (not the request)
+            "fields_written": fill_res["filled_count"],
+            # mapped widget names absent from the PDF — a stale-mapping signal
+            "missing_widgets": fill_res["missing_fields"],
+            "overflowed": fill_res["overflowed"],
+            "blank_verified": blank_ok,
+            "fields_split": n_split,
+        }
     out = {"form_id": form_id, "ok": True, "out_pdf": str(out_pdf),
            "mapped_keys": res["mapped_keys"], "resolved": res["resolved"],
            "coverage": (round(res["resolved"] / res["mapped_keys"], 3)

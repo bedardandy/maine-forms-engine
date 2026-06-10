@@ -95,19 +95,44 @@ def make_tool_functions(backend: FormsBackend) -> dict:
             "plan_fill": plan_fill, "fill_form": fill_form}
 
 
-def build_server(backend: FormsBackend):
-    """Build a FastMCP stdio server exposing the standardized tools."""
+def _wrap_extra(fn):
+    """Give a repo-specific extra tool the same never-raise error shape."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapped(*a, **kw):
+        try:
+            res = fn(*a, **kw)
+        except Exception as e:  # noqa: BLE001 — one error shape, never raise
+            return _error(e)
+        if isinstance(res, dict) and "ok" not in res:
+            res = {"ok": True, **res}
+        return res
+
+    return wrapped
+
+
+def build_server(backend: FormsBackend, extra_tools=()):
+    """Build a FastMCP stdio server exposing the standardized tools.
+
+    ``extra_tools`` is an iterable of plain callables a repo registers beyond
+    the standard four (e.g. the corp repo's filing ``preflight``). Each is
+    registered under its function name with its docstring as the tool
+    description, wrapped in the scaffold's one error shape.
+    """
     from mcp.server.fastmcp import FastMCP
 
     mcp = FastMCP(backend.name)
     for fn in make_tool_functions(backend).values():
         mcp.tool()(fn)
+    for fn in extra_tools:
+        mcp.tool()(_wrap_extra(fn))
     return mcp
 
 
-def main(backend: FormsBackend) -> int:
+def main(backend: FormsBackend, extra_tools=()) -> int:
     try:
-        server = build_server(backend)
+        server = build_server(backend, extra_tools)
     except ImportError:
         print("mcp not installed: pip install 'maine-forms-engine[mcp]'",
               file=sys.stderr)

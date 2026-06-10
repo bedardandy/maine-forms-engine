@@ -180,7 +180,9 @@ def fill_form(
     tree: dict | None = None,
     addendum_policy: str = "none",
     form_id: str | None = None,
-) -> str:
+    supported_policies: frozenset | set | None = None,
+    return_report: bool = False,
+) -> str | dict:
     """Fill an AcroForm PDF with field data.
 
     Args:
@@ -195,9 +197,23 @@ def fill_form(
             the user will attach a court-published continuation form),
             or "auto" (append addendum pages for overflowed answers —
             requires the `engine.addendum` module, which is NOT shipped
-            in this repo; requesting it raises ValueError on overflow).
+            in this package; requesting it raises ValueError on overflow).
         form_id: Form identifier used in the addendum header. Defaults
             to the PDF filename stem.
+        supported_policies: Optional allowlist of addendum policies this
+            consumer supports. When set, an effective policy (after any
+            tree override) outside the set raises ValueError *before*
+            the PDF is opened — the transactional-tax-forms behavior,
+            where only "none" is supported. Default None = the donor
+            (court) behavior: every policy is accepted here and "auto"
+            fails at overflow time if no addendum renderer is shipped.
+        return_report: When True, return a result dict instead of the
+            output-path string (the transactional-tax-forms divergence):
+            ``{"output_path", "filled_count", "missing_fields",
+            "overflowed"}`` — ``missing_fields`` is the stale-mapping
+            signal (field_data keys with no widget in the PDF) and
+            ``overflowed`` lists field names whose value didn't fit.
+            Default False = the donor (court) contract: the path string.
 
     Multi-widget handling: when N>1 widgets share a field name (the
     tree-builder's "continuation line" pattern), the value is greedy
@@ -218,6 +234,14 @@ def fill_form(
         addendum_policy = tree.get("addendum_policy") or addendum_policy
         if not form_id:
             form_id = tree.get("form_id")
+    if supported_policies is not None and addendum_policy not in supported_policies:
+        # Policy gate (tax divergence): refuse an unsupported addendum policy
+        # up front instead of silently dropping overflow mid-fill.
+        raise ValueError(
+            f"addendum_policy={addendum_policy!r} is not supported by this "
+            f"consumer (supported: {', '.join(sorted(supported_policies))}). "
+            "The addendum renderer is not shipped with maine-forms-engine; "
+            "policies beyond 'none' need a consumer-side engine.addendum.")
     if not form_id:
         form_id = pdf_path.stem.split(" ")[0]
 
@@ -449,6 +473,13 @@ def fill_form(
             ", ".join(name for name, _ in overflowed[:5]),
         )
 
+    if return_report:
+        return {
+            "output_path": str(output_path),
+            "filled_count": filled_count,
+            "missing_fields": missing_fields,
+            "overflowed": [name for name, _ in overflowed],
+        }
     return str(output_path)
 
 
@@ -456,13 +487,15 @@ def fill_form_from_json(
     pdf_path: str | Path,
     json_path: str | Path,
     output_path: str | Path | None = None,
-) -> str:
+    *,
+    return_report: bool = False,
+) -> str | dict:
     """Fill a form using data from a JSON file.
 
     JSON format: {"field_name": "value", ...}
     """
     data = json.loads(Path(json_path).read_text())
-    return fill_form(pdf_path, data, output_path)
+    return fill_form(pdf_path, data, output_path, return_report=return_report)
 
 
 def list_form_fields(pdf_path: str | Path) -> list[dict]:

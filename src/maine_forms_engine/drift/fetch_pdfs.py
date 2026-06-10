@@ -64,20 +64,24 @@ def _verify(data: bytes, entry: dict) -> str | None:
     return None
 
 
-def main() -> int:
+def main(argv=None, *, default_manifest: pathlib.Path | None = None,
+         default_forms_root: pathlib.Path | None = None) -> int:
+    """CLI entry point. ``argv`` and the two defaults exist for consumer-repo
+    shims, which pin the manifest/forms tree to their repo layout."""
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--manifest", type=pathlib.Path, default=DEFAULT_MANIFEST)
+    ap.add_argument("--manifest", type=pathlib.Path,
+                    default=default_manifest or DEFAULT_MANIFEST)
     ap.add_argument("--forms-root", type=pathlib.Path,
-                    default=DEFAULT_FORMS_ROOT,
+                    default=default_forms_root or DEFAULT_FORMS_ROOT,
                     help="per-form artifact tree (default: ./forms)")
     ap.add_argument("--forms", default="", help="comma list to limit; omit for all")
     ap.add_argument("--force", action="store_true",
                     help="re-download even if a valid file is already present")
     ap.add_argument("--timeout", type=int, default=30)
     ap.add_argument("--retries", type=int, default=3)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     manifest = json.loads(args.manifest.read_text())
     forms = manifest["forms"]

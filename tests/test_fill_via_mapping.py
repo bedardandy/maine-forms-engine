@@ -76,3 +76,85 @@ def test_missing_blank_is_an_error(form_tree, tmp_path):
                            forms_root=form_tree / "forms")
     assert res["ok"] is False
     assert "blank PDF not found" in res["error"]
+
+
+# --- tax-consumer policy configuration (see CHANGES_FROM_DONOR.md) ----------
+
+TAX_FILLABLE = frozenset({"verified", "opus-adjudicated", "mapped",
+                          "vision-mapped"})
+
+
+def test_allowlist_status_gate_refuses_remap_pending(form_tree, tmp_path):
+    mp = form_tree / "forms" / "TEST-1" / "mapping.json"
+    m = json.loads(mp.read_text())
+    m["status"] = "remap-pending"
+    mp.write_text(json.dumps(m))
+    res = fill_via_mapping("TEST-1", CASE, tmp_path / "out",
+                           forms_root=form_tree / "forms",
+                           fillable_statuses=TAX_FILLABLE,
+                           skip_reasons={"remap-pending": "the upstream blank "
+                                         "drifted; re-map before filling"},
+                           result_style="tax")
+    assert res["ok"] is False and res["skipped"] is True
+    assert res["status"] == "remap-pending"
+    assert "drifted" in res["error"]
+    # without the allowlist (court default) the status is not blocked
+    res2 = fill_via_mapping("TEST-1", CASE, tmp_path / "out2",
+                            forms_root=form_tree / "forms")
+    assert res2["ok"] is True
+
+
+def test_built_against_sha_drifted_revision_is_refused(form_tree):
+    """Ported from transactional-tax-forms tests/test_engine_offline.py
+    (BuiltAgainstSha): a mapping pinned to a drifted blank revision is
+    refused even though its status says fillable."""
+    mp = form_tree / "forms" / "TEST-1" / "mapping.json"
+    m = json.loads(mp.read_text())
+    m["built_against_sha256"] = "0" * 64
+    mp.write_text(json.dumps(m))
+    res = resolve_mapping("TEST-1", CASE, forms_root=form_tree / "forms",
+                          require_built_against=True)
+    assert res.get("skipped")
+    assert "drifted" in res["reason"]
+
+
+def test_built_against_sha_matching_revision_resolves(form_tree):
+    manifest = json.loads(
+        (form_tree / "catalog" / "pdf_manifest.json").read_text())
+    pinned = manifest["forms"]["TEST-1"]["sha256"]
+    mp = form_tree / "forms" / "TEST-1" / "mapping.json"
+    m = json.loads(mp.read_text())
+    m["built_against_sha256"] = pinned
+    mp.write_text(json.dumps(m))
+    res = resolve_mapping("TEST-1", CASE, forms_root=form_tree / "forms",
+                          require_built_against=True,
+                          manifest_path=form_tree / "catalog" / "pdf_manifest.json")
+    assert not res.get("skipped")
+    assert res["resolved"] == 4
+    # the gate is opt-in: court's default ignores built_against_sha256
+    mp_drift = json.loads(mp.read_text())
+    mp_drift["built_against_sha256"] = "f" * 64
+    mp.write_text(json.dumps(mp_drift))
+    res2 = resolve_mapping("TEST-1", CASE, forms_root=form_tree / "forms")
+    assert not res2.get("skipped")
+
+
+def test_tax_result_style_diagnostics(form_tree, tmp_path):
+    res = fill_via_mapping("TEST-1", CASE, tmp_path / "out",
+                           forms_root=form_tree / "forms",
+                           fillable_statuses=TAX_FILLABLE,
+                           require_built_against=True,
+                           blank_verify_env=("TTF_VERIFY_BLANK",
+                                             "MCF_VERIFY_BLANK"),
+                           result_style="tax")
+    assert res["ok"], res
+    assert res["status"] == "verified"
+    assert res["missing_widgets"] == []
+    assert res["overflowed"] == []
+    assert res["blank_verified"] is True
+    # tax counts widgets actually written (filled_count), not requested:
+    # 3 single widgets + 1 line of the 2-widget narrative group = 4 — unlike
+    # the court style, whose fields_written of 5 counts the request (4 fields
+    # + the __wrap_cache_ entry the filler adds for the group).
+    assert res["fields_written"] == 4
+    assert res["unresolved"] == []

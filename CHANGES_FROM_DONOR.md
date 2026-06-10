@@ -84,3 +84,50 @@ therefore `engine/fill.py`, `build_kv_map`, the addendum renderer —
 explaining the renderer is not shipped); corp rubric / when-gating /
 JSON-Schema validation; probate geometry fill path; repo routers
 (`find_forms` lexical/LLM routers stay behind the MCP adapter); domain docs.
+
+## Post-extraction reconciliation (2026-06-10)
+
+The package shipped court's engine behavior; the tax fork had since gained
+improvements the package lacked. Reconciled as compatible features — every
+default still matches the court donor, the tax consumer opts in:
+
+- `fill/form_filler.py` —
+  - `fill_form(..., return_report=True)` returns the tax fork's result dict
+    `{output_path, filled_count, missing_fields, overflowed}` instead of the
+    donor's output-path string (default `False` = donor contract).
+    `fill_form_from_json` gains the same flag.
+  - `fill_form(..., supported_policies=frozenset({...}))` refuses an
+    unsupported effective `addendum_policy` (after any tree override) up
+    front — tax's hard-raise on anything but `"none"`. Default `None` =
+    donor behavior (every policy accepted; `"auto"` fails at overflow time).
+- `fill/fill_via_mapping.py` —
+  - `resolve_mapping` / `fill_via_mapping` gain `fillable_statuses`
+    (allowlist mode; default `None` = donor blocklist of
+    recipe/no-mappable-fields), `skip_reasons` (per-status refusal text),
+    and `require_built_against` + `manifest_path` (tax commit 9524439's
+    staleness gate: a mapping whose `built_against_sha256` disagrees with
+    the manifest pin is refused — the MRS-1041ME incident class).
+  - `fill_via_mapping` gains `blank_verify_env` (which env vars set the
+    blank-guard mode; tax reads `TTF_VERIFY_BLANK` then `MCF_VERIFY_BLANK`)
+    and `result_style="court"|"tax"` (the two forks' result dialects:
+    court = coverage ratio + `blank_verify` dict + zero-resolved loud
+    failure; tax = `missing_widgets`/`overflowed` diagnostics,
+    `fields_written` = widgets actually written, `blank_verified` bool).
+  - the mapping-refused return now carries `skipped: true` + `status`
+    alongside the donor's `{form_id, ok, error}` (superset; tax parity).
+- `drift/check_upstream.py` — adopted the tax fork's revised-blank
+  inspection: CHANGED results carry `got_num_pages`/`got_has_acroform` and
+  `--update-manifest` adopts them along with sha256/bytes. `check_one` and
+  `main()` gain a `downloader` hook (so consumer-shim tests can keep stubbing
+  their `tools.check_upstream._download`), and `main()` gains `argv` /
+  `default_manifest` / `update_hint` (string or callable taking the changed
+  list) for consumer shims.
+- `drift/fetch_pdfs.py` — `main()` gains `argv` / `default_manifest` /
+  `default_forms_root` for consumer shims.
+- `mcp/server.py` — `build_server` / `main` gain `extra_tools=[...]`:
+  repo-specific callables (e.g. corp's filing `preflight`) registered beyond
+  the standard four, wrapped in the scaffold's one error shape.
+
+Tests: tax's BuiltAgainstSha pair ported (drifted refused / matching
+resolves), plus allowlist-gate, tax result-style, report/policy-gate, and
+extra_tools coverage. Version stays 0.1.0 (pre-release).

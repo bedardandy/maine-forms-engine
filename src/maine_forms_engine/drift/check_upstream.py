@@ -34,13 +34,18 @@ from .fetch_pdfs import _download  # reuse the verified-download helper
 DEFAULT_MANIFEST = pathlib.Path("catalog") / "pdf_manifest.json"
 
 
-def check_one(fid: str, entry: dict, timeout: int, retries: int) -> dict:
-    """Probe one form's official URL and classify it against the manifest."""
+def check_one(fid: str, entry: dict, timeout: int, retries: int,
+              downloader=None) -> dict:
+    """Probe one form's official URL and classify it against the manifest.
+
+    ``downloader`` (a ``(url, timeout, retries) -> bytes`` callable) lets a
+    consumer shim route through its own download helper — e.g. so its tests
+    can keep stubbing ``tools.check_upstream._download``."""
     url = entry.get("url")
     if not url:
         return {"form_id": fid, "status": "NO_URL"}
     try:
-        data = _download(url, timeout, retries)
+        data = (downloader or _download)(url, timeout, retries)
     except Exception as e:  # noqa: BLE001
         return {"form_id": fid, "status": "GONE", "detail": str(e)[:160]}
     if data[:5] != b"%PDF-":
@@ -49,7 +54,7 @@ def check_one(fid: str, entry: dict, timeout: int, retries: int) -> dict:
     got = verify.sha256_bytes(data)
     if got == entry.get("sha256"):
         return {"form_id": fid, "status": "ok", "sha256": got, "bytes": len(data)}
-    return {
+    res = {
         "form_id": fid,
         "status": "CHANGED",
         "expected_sha256": entry.get("sha256"),
@@ -58,20 +63,45 @@ def check_one(fid: str, entry: dict, timeout: int, retries: int) -> dict:
         "got_bytes": len(data),
         "url": url,
     }
+    # Inspect the revised blank so --update-manifest can adopt every manifest
+    # field (num_pages / has_acroform), not just the hash. (Adopted from the
+    # transactional-tax-forms fork; see CHANGES_FROM_DONOR.md.)
+    try:
+        import fitz  # noqa: PLC0415 — optional; the drift report stands without it
+        doc = fitz.open(stream=data, filetype="pdf")
+        res["got_num_pages"] = doc.page_count
+        res["got_has_acroform"] = any((p.widgets() or []) for p in doc)
+        doc.close()
+    except Exception as e:  # noqa: BLE001 — drift report still stands
+        res["inspect_error"] = repr(e)[:120]
+    return res
 
 
-def main() -> int:
+DEFAULT_UPDATE_HINT = "Re-run mapping + audit for each before publishing."
+
+
+def main(argv=None, *, default_manifest: pathlib.Path | None = None,
+         update_hint: str | None = None, downloader=None) -> int:
+    """CLI entry point.
+
+    ``argv`` / ``default_manifest`` / ``update_hint`` exist for consumer-repo
+    shims: a shim pins ``default_manifest`` to its repo manifest and supplies
+    its own post-``--update-manifest`` guidance (e.g. the tax repo points at
+    its ``tools/build_manifest.py`` re-inventory step).
+    """
     ap = argparse.ArgumentParser(description="Detect upstream revisions of the blank PDFs")
     ap.add_argument("--forms", help="comma-separated form ids (default: all)")
     ap.add_argument("--timeout", type=int, default=30)
     ap.add_argument("--retries", type=int, default=3)
     ap.add_argument("--json", action="store_true", help="emit a JSON report")
     ap.add_argument("--update-manifest", action="store_true",
-                    help="adopt the new sha256/bytes for CHANGED forms "
+                    help="adopt the new sha256/bytes (and num_pages/"
+                         "has_acroform when known) for CHANGED forms "
                          "(only after the mapping has been re-verified)")
-    ap.add_argument("--manifest", type=pathlib.Path, default=DEFAULT_MANIFEST,
+    ap.add_argument("--manifest", type=pathlib.Path,
+                    default=default_manifest or DEFAULT_MANIFEST,
                     help="pdf_manifest.json path (default: ./catalog/pdf_manifest.json)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     MANIFEST = args.manifest
     manifest = verify.load_manifest(MANIFEST)
@@ -87,7 +117,8 @@ def main() -> int:
     else:
         ids = sorted(forms)
 
-    results = [check_one(f, forms[f], args.timeout, args.retries) for f in ids]
+    results = [check_one(f, forms[f], args.timeout, args.retries,
+                         downloader=downloader) for f in ids]
 
     changed = [r for r in results if r["status"] == "CHANGED"]
     gone = [r for r in results if r["status"] == "GONE"]
@@ -113,11 +144,18 @@ def main() -> int:
 
     if args.update_manifest and changed:
         for r in changed:
-            forms[r["form_id"]]["sha256"] = r["got_sha256"]
-            forms[r["form_id"]]["bytes"] = r["got_bytes"]
+            e = forms[r["form_id"]]
+            e["sha256"] = r["got_sha256"]
+            e["bytes"] = r["got_bytes"]
+            if "got_num_pages" in r:
+                e["num_pages"] = r["got_num_pages"]
+            if "got_has_acroform" in r:
+                e["has_acroform"] = r["got_has_acroform"]
         MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-        print(f"\nmanifest updated for {len(changed)} form(s). "
-              "Re-run mapping + audit for each before publishing.")
+        hint = update_hint or DEFAULT_UPDATE_HINT
+        if callable(hint):
+            hint = hint(changed)
+        print(f"\nmanifest updated for {len(changed)} form(s). {hint}")
 
     return 1 if (changed or gone) else 0
 
