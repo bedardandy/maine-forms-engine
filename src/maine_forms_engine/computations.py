@@ -64,6 +64,17 @@ Number handling is deterministic: ``"$1,234.56"``, thousands commas, and
 parentheses-negatives parse; comparison uses a small tolerance so "1300" vs
 "1,300.00" is not a mismatch; computed output mimics the formatting style of
 the input values (bare integers stay bare integers).
+
+Two consumption paths, one evaluator:
+
+- **Mapped fill** — ``fill_via_mapping`` loads ``computations.json`` and
+  routes computed values into widgets via the mapping; nothing to call.
+- **Recipe-tier / facts-only** — forms whose mapping is pointer-only (empty
+  ``map``) are filled by recipe code reading facts off the case, so the
+  mapped wiring never sees the computation. :func:`compute_facts` is the
+  public mapping-independent entry point: facts dict + spec in,
+  ``(computed_values_to_add, warnings)`` out, identical semantics. The
+  harness merges the values into the case before its recipes run.
 """
 from __future__ import annotations
 
@@ -314,6 +325,53 @@ def evaluate(computations: dict | None, values: dict) -> dict:
                 out["warnings"].append(w)
             # supplied (even contradicting) always wins and feeds downstream
     return out
+
+
+def compute_facts(computations: dict | None,
+                  facts: dict) -> tuple[dict, list]:
+    """Facts-only computations: the mapping-independent public entry point.
+
+    For recipe-tier forms (pointer-only / empty ``mapping.json``, fill driven
+    by per-form recipe code) the mapped-fill wiring never runs, but the form
+    still prints deterministic arithmetic ("for a total of $ ..."). Call this
+    with the case's facts dict and the form's computations spec (the parsed
+    ``computations.json`` — same schema, targets/inputs are canonical fact
+    keys that no mapping needs to consume) **before** the recipe reads the
+    case, and merge the returned values in::
+
+        from maine_forms_engine.computations import (
+            compute_facts, load_computations)
+
+        comp = load_computations(form_dir)        # None when absent
+        values, warnings = compute_facts(comp, case)
+        case.update(values)                       # omitted targets only
+        # ... recipe code now reads the computed facts off the case ...
+
+    Returns ``(computed_values_to_add, warnings)``:
+
+    - ``computed_values_to_add``: ``{target_key: formatted_value}`` for every
+      target the facts dict **omits** whose inputs are all present — keys
+      exactly as spelled in the spec (dotted canonical keys, e.g.
+      ``"facts.judgment_total"``). A flat ``case.update(values)`` is enough:
+      every engine lookup (and this function's own cascade) resolves flat
+      keys before dotted paths. The input dict is never mutated.
+    - ``warnings``: the ``COMPUTATION_MISMATCH`` entries — a **supplied**
+      target always wins (it is never returned in the values dict, never
+      overridden) and a contradiction only warns: ``{"code":
+      "COMPUTATION_MISMATCH", "key", "supplied", "computed", "formula_text",
+      "severity": "warning"}``.
+
+    Exactly the established mapped-fill semantics, with the same evaluator:
+    omitted → computed; supplied wins + mismatch warning; topological cascade
+    (computed or supplied values feed later computations); missing input →
+    target skipped silently; unparseable input/supplied value → skipped
+    without guessing; ``None``/empty spec → ``({}, [])``. The skip notes are
+    not part of the tuple — call :func:`evaluate` for the full report
+    (``{"computed", "warnings", "notes"}``) when you want them.
+    """
+    report = evaluate(computations, facts)
+    return ({e["key"]: e["value"] for e in report["computed"]},
+            report["warnings"])
 
 
 def evaluate_for_form(form_id: str, values: dict,

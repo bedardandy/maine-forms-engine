@@ -7,7 +7,8 @@ import fitz
 import pytest
 
 from maine_forms_engine.computations import (
-    evaluate, evaluate_for_form, load_computations, parse_amount)
+    compute_facts, evaluate, evaluate_for_form, load_computations,
+    parse_amount)
 from maine_forms_engine.fill.fill_via_mapping import fill_via_mapping
 
 from conftest import CASE, synthetic_form
@@ -191,6 +192,87 @@ def test_empty_and_missing_computations_are_inert(tmp_path):
     assert evaluate({}, {"facts": {"a": "1"}}) == empty
     assert load_computations(tmp_path) is None
     assert evaluate_for_form("NOPE-1", {"facts": {}}, tmp_path) == empty
+
+
+# ------------------------------- compute_facts (recipe-tier, facts-only)
+# The mapping-independent public entry point: facts dict + spec in,
+# (computed_values_to_add, warnings) out — no mapping.json, no form dir,
+# no widgets anywhere in the call. Targets are canonical fact keys a
+# recipe reads off the case (e.g. court MJ-009/MJ-015 "for a total of $").
+TOTAL = {"computed": {"facts.judgment_total": {
+    "op": "sum",
+    "inputs": ["facts.judgment_amount", "facts.costs", "facts.interest"],
+    "formula_text": "for a total of $"}}}
+
+
+def test_compute_facts_facts_only_omitted_target_is_computed():
+    facts = {"facts": {"judgment_amount": "1,200.00", "costs": "85.00",
+                       "interest": "15.00"}}
+    values, warnings = compute_facts(TOTAL, facts)
+    assert values == {"facts.judgment_total": "1,300.00"}
+    assert warnings == []
+    # the case is never mutated — the caller decides where to merge
+    assert "judgment_total" not in facts["facts"]
+    assert "facts.judgment_total" not in facts
+
+
+def test_compute_facts_supplied_wins_with_mismatch_warning():
+    values, warnings = compute_facts(
+        TOTAL, {"facts": {"judgment_amount": "1,200.00", "costs": "85.00",
+                          "interest": "15.00", "judgment_total": "999"}})
+    assert values == {}  # supplied value never returned, never overridden
+    assert warnings == [{"code": "COMPUTATION_MISMATCH",
+                         "key": "facts.judgment_total", "supplied": "999",
+                         "computed": "1,300.00",
+                         "formula_text": "for a total of $",
+                         "severity": "warning"}]
+    # a consistent supplied value (any formatting) is clean
+    for ok in ("1300", "1,300.00", "$1,300", 1300):
+        values, warnings = compute_facts(
+            TOTAL, {"facts": {"judgment_amount": "1,200.00",
+                              "costs": "85.00", "interest": "15.00",
+                              "judgment_total": ok}})
+        assert (values, warnings) == ({}, []), ok
+
+
+def test_compute_facts_topological_chain_and_flat_merge():
+    values, warnings = compute_facts(
+        CHAIN, {"facts": {"a": "1", "b": "2", "c": "10"}})
+    assert values == {"facts.subtotal": "3", "facts.grand_total": "13"}
+    assert warnings == []
+    # supplied intermediate feeds downstream AS-IS + warns, exactly like
+    # the mapped path
+    values, warnings = compute_facts(
+        CHAIN, {"facts": {"a": "1", "b": "2", "c": "10", "subtotal": "5"}})
+    assert values == {"facts.grand_total": "15"}
+    assert [w["code"] for w in warnings] == ["COMPUTATION_MISMATCH"]
+    assert warnings[0]["key"] == "facts.subtotal"
+    # the documented merge: a flat case.update(values) round-trips —
+    # flat dotted keys resolve before nested paths on the next call
+    case = {"facts": {"a": "1", "b": "2", "c": "10"}}
+    case.update(compute_facts(CHAIN, case)[0])
+    assert compute_facts(CHAIN, case) == ({}, [])
+
+
+def test_compute_facts_money_formats():
+    # $-and-comma inputs keep their style; parentheses-negatives parse
+    values, _ = compute_facts(
+        {"computed": {"facts.t": {
+            "op": "sum", "inputs": ["facts.a", "facts.b"],
+            "formula_text": "Total"}}},
+        {"facts": {"a": "$1,234.56", "b": "($234.56)"}})
+    assert values == {"facts.t": "$1,000.00"}
+
+
+def test_compute_facts_skips_and_inert_spec():
+    # missing input -> target skipped silently; unparseable -> never guessed
+    assert compute_facts(TOTAL, {"facts": {"judgment_amount": "1200"}}) \
+        == ({}, [])
+    assert compute_facts(
+        TOTAL, {"facts": {"judgment_amount": "1200", "costs": "see attached",
+                          "interest": "15"}}) == ({}, [])
+    assert compute_facts(None, {"facts": {"a": "1"}}) == ({}, [])
+    assert compute_facts({}, {"facts": {"a": "1"}}) == ({}, [])
 
 
 # ----------------------------------------------------- fill-path wiring

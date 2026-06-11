@@ -204,3 +204,21 @@ checkout (all changed lines classify as the documented hook/path changes).
   `default_naming` and a `--naming` CLI flag, so the probate shim's pipeline
   remediates with its `schema-label` /TU strategy. Default unchanged
   (`caption`, the court donor behavior).
+
+## Recipe-tier computations entry point (v0.5.0, 2026-06-11)
+
+`computations.compute_facts(computations, facts) -> (values, warnings)` —
+a thin public wrapper over the existing `evaluate()` (no new evaluator, no
+new ops, no new spec fields) for forms whose `mapping.json` is pointer-only
+(empty `map`) and whose fill runs through per-form recipe code instead of
+the mapped path (court MJ-009 / MJ-015 "for a total of $ ..."). It returns
+`{target_key: formatted_value}` for omitted targets plus the
+`COMPUTATION_MISMATCH` warning list, with the established semantics intact:
+supplied always wins (and never appears in the values dict), topological
+cascade, silent missing-input skip, never-guess unparseable skip. Targets
+and inputs are canonical fact keys that no mapping needs to consume; the
+calling harness merges the values into the case before its recipes run
+(`case.update(values)` — flat keys resolve before dotted paths). The
+mapped-fill wiring in `fill_via_mapping` is unchanged (it keeps calling
+`evaluate()` directly for the full report). New in the package, no donor
+counterpart.

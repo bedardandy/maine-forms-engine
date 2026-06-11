@@ -162,6 +162,38 @@ parentheses-negatives), comparison tolerates formatting ("1300" vs
 **Nothing is embedded in the PDF** — no AcroForm calculation JavaScript, no
 field locking; no computations file means zero behavior change.
 
+### Recipe-tier forms: the facts-only entry point
+
+Some forms are pointer-only — `mapping.json` has an empty `map` and the fill
+is driven by per-form recipe code reading facts off the case — yet still
+print deterministic arithmetic ("for a total of $ ..."). For those,
+`compute_facts(computations, facts)` is the **mapping-independent public
+entry point**, running the exact same evaluator and semantics as the mapped
+fill. The spec is the same `computations.json` schema; targets and inputs
+are canonical fact keys that **no mapping needs to consume**:
+
+```python
+from maine_forms_engine.computations import compute_facts, load_computations
+
+comp = load_computations(form_dir)            # None when absent (fine)
+values, warnings = compute_facts(comp, case)  # ({key: value}, [warnings])
+case.update(values)                           # omitted targets only
+# ... recipes now read the computed facts off the case ...
+```
+
+- `values` is `{target_key: formatted_value}` only for targets the case
+  **omits** (all inputs present), keys exactly as spelled in the spec
+  (`"facts.judgment_total"`). A flat `case.update(values)` suffices — every
+  engine lookup resolves flat keys before dotted paths. The call never
+  mutates `case`.
+- `warnings` is the `COMPUTATION_MISMATCH` list: a supplied target always
+  wins (never in `values`, never overridden); a contradiction only warns.
+  Surface them alongside the fill report like `computation_warnings`.
+- Same cascade (computed or supplied values feed later computations,
+  topologically), same skips (missing input → silent; unparseable input or
+  supplied value → skipped, never guessed — those notes live in the full
+  `evaluate(...)` report, not the tuple); `None`/empty spec → `({}, [])`.
+
 ## The MCP backend adapter
 
 A consuming repo's `tools/agent_server.py` shrinks to a backend object plus
