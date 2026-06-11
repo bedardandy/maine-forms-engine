@@ -32,6 +32,7 @@ MODULE_MAP = {
     "fill/fill_via_mapping.py": "engine/fill_via_mapping.py",
     "drift/check_upstream.py": "tools/check_upstream.py",
     "drift/fetch_pdfs.py": "tools/fetch_pdfs.py",
+    "verify_mapping.py": "tools/verify_mapping_fields.py",
     "accessibility/accessibility_pipeline.py": "tools/accessibility/accessibility_pipeline.py",
     "accessibility/remediate_form.py": "tools/accessibility/remediate_form.py",
     "accessibility/embed_widget_font.py": "tools/accessibility/embed_widget_font.py",
@@ -48,6 +49,14 @@ _EXPECTED = re.compile(
     r"|Packaged change|CHANGES_FROM_DONOR"
     r"|--naming|help=|choices="
     r"|USER_AGENT"
+    # verify_mapping's format hooks + consumer-shim CLI hooks: the donor's
+    # inlined schema/pdf/anchor lookups became the default hook callables
+    r"|manifest_entry|blank_path|resolve_widgets|split_names|widget_by_key"
+    r"|\bargv\b|default_forms_root|default_manifest"
+    r"|verify_mapping|verify_form|transactional-tax-forms|\bfmap\b|labels"
+    r"|widget_name|\bschema\b|schema\.json|field_splits|field_type|\{fid\}"
+    r"|\banchor\b|built_against_sha256|missing_in_pdf|def main|parse_args"
+    r"|\.get\(\"fields\"|not in names|already carry"
     # the injectable /TU naming strategy (remediate_form)
     r"|naming|schema-label|schema_label_names|caption|_accessible_names"
     r"|field_id|callable|donor behavior|schema\[\"fields\"\]"

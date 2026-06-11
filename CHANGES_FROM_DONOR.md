@@ -151,6 +151,51 @@ behavior unless a consumer opts in):
   consumer repo can validate its converted manifest in CI. The prose
   canonical-fact-object spec stays in the repo `specs/` directory.
 
+## Mapping-staleness verifier promoted (v0.4.0, 2026-06-11)
+
+`maine_forms_engine.verify_mapping` is an extraction of **transactional-tax-
+forms `tools/verify_mapping_fields.py`** (the donor for this module; the
+other repos had no counterpart). Semantics are donor-identical: per form,
+the on-disk blank must match the manifest SHA-256 byte-for-byte before the
+field check runs, every `mapping.map` entry must resolve to a live AcroForm
+field name (`field_splits.json` renames count as live; `"fill": "manual"`
+entries and documented `dropped_keys` never enter `map` and are exempt by
+construction), report-only by default, `--stamp` writes
+`built_against_sha256` only into mappings that fully verify, `--json`,
+non-zero exit when any checked form fails. Documented changes:
+
+- **Path anchors → parameters** (the global policy): the donor's repo-root
+  `FORMS` / `MANIFEST` become cwd-relative `DEFAULT_FORMS_ROOT` /
+  `DEFAULT_MANIFEST` plus `forms_root=` parameters and `--forms-root` /
+  `--manifest` CLI arguments; `main()` gains `argv` / `default_forms_root` /
+  `default_manifest` for consumer shims (the `check_upstream` /
+  `fetch_pdfs` shim-hook style).
+- **Repo format differences → hooks, not conditionals.** The donor inlined
+  its repo dialect; the package factors each lookup into a keyword hook on
+  `verify_form` / `main`, every default being the donor behavior:
+  - `manifest_entry(manifest, form_id) -> dict` — default: the
+    `{"forms": {<id>: {...}}}` dialect (all four repos today).
+  - `blank_path(fdir, form_id, entry) -> Path` — default:
+    `forms/<ID>/<ID>.pdf`.
+  - `resolve_widgets(fdir, fmap) -> ({map_key: widget_name}, missing_keys)`
+    — default `schema_widget_names` (donor: map keys are `schema.json`
+    field_ids, `label` is the widget name). `direct_widget_names` ships for
+    the corp dialect (map keys ARE widget names; values are spec dicts).
+  - `split_names(fdir) -> set` — default: the donor's `field_splits.json`
+    `new_name` reader (also exported under the donor's private name
+    `_split_names` for shim re-export).
+- **`stamp` anchor fallback.** The donor inserted the stamp after `model` /
+  `status` and silently dropped it when a mapping had neither (a case the
+  tax repo never hits). The package appends it instead — corp-dialect
+  mappings (`{form_id, map}`) now get stamped rather than skipped.
+  Indent-/trailing-newline preservation and idempotence are donor-identical.
+- Donor prose naming specific tax forms (MRS-1041ME / MRS-700SOV stamp
+  placement) was generalized in docstrings; behavior unchanged.
+
+`scripts/diff_against_donor.py` now maps `verify_mapping.py` →
+`tools/verify_mapping_fields.py` and proves the extraction against a tax
+checkout (all changed lines classify as the documented hook/path changes).
+
 ## Probate-migration extensions (2026-06-10)
 
 - `drift/check_upstream.py` — `main` gains `default_timeout` (probate probes

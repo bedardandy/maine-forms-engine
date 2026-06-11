@@ -34,6 +34,7 @@ PyMuPDF, pikepdf, fontTools (and optionally `mcp` for the agent server).
 |---|---|---|
 | `maine_forms_engine.fill` | `form_filler` (AcroForm writer: multi-widget wrap/replicate, checkbox affirmative-token gate, font auto-fit), `fill_via_mapping` (mapping.json + canonical fact object -> filled PDF, with blank-revision guard, width-fit, shared-field split, zero-resolved failure), `field_split`, `text_fit`, `canonical` (fact object -> engine case adapter), `verify` (pinned-revision manifest checks), `verify_fill` (deterministic post-fill diff) | court `engine/` |
 | `maine_forms_engine.drift` | `check_upstream` (re-probe official URLs vs manifest; `%PDF-` non-PDF guard; `--update-manifest`), `fetch_pdfs` (verified on-demand fetch — repos never redistribute blanks) | court `tools/` |
+| `maine_forms_engine.verify_mapping` | mapping-staleness verifier: per form, the on-disk blank must match the manifest SHA-256 byte-for-byte AND every `mapping.map` entry must resolve to a live AcroForm field name (`field_splits.json` renames count as live). Report-only by default; `--stamp` writes `built_against_sha256` only for forms that fully verify; `--json`; non-zero exit on any failure. Format hooks (`manifest_entry` / `blank_path` / `resolve_widgets` / `split_names`) default to the tax/court dialect | tax `tools/verify_mapping_fields.py` |
 | `maine_forms_engine.accessibility` | `accessibility_pipeline` (remediate -> OpenDataLoader tag tree -> PDF/UA stamp -> veraPDF), `remediate_form` (title//Lang//Tabs + **pluggable /TU naming strategy**), `embed_widget_font` (base-14 -> Liberation embedding + ToUnicode), `make_zapf_ttf` | court `tools/accessibility/` |
 | `maine_forms_engine.mcp` | standardized agent scaffold: `find_forms / get_form / plan_fill / fill_form` with one error shape; the repo supplies a backend adapter | new (consolidates 4 server dialects) |
 | `specs/` + `maine_forms_engine.specs` | the canonical fact-object spec (prose, repo `specs/`) + a JSON Schema for the `{"forms": {...}}` `pdf_manifest.json` dialect (shipped as package data; `specs.pdf_manifest_schema()`) | tax `docs/integrations/` |
@@ -57,6 +58,7 @@ res = fill_via_mapping("AD-001", case, pathlib.Path("/tmp/out"),
 ```bash
 python3 -m maine_forms_engine.drift.fetch_pdfs --manifest catalog/pdf_manifest.json --forms-root forms
 python3 -m maine_forms_engine.drift.check_upstream --json
+python3 -m maine_forms_engine.verify_mapping --json          # re-verify mappings; add --stamp after re-mapping
 python3 -m maine_forms_engine.fill.fill_via_mapping --form AD-001 --case case.json --out out/
 python3 -m maine_forms_engine.accessibility.remediate_form filled.pdf out.pdf --schema forms/AD-001/schema.json --naming caption
 ```
