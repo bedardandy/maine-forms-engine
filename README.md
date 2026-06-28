@@ -1,3 +1,5 @@
+> **AI/legal-use disclosure:** This repository is experimental, AI-assisted workflow software. It is not legal advice, not a primary legal source, and not lawyer-reviewed as a complete statement of law. Outputs are first drafts for human review, intended to reduce creation effort while increasing focused review effort. See [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
+
 # maine-forms-engine
 
 The shared core extracted from the four Maine forms libraries — the ~1,800
