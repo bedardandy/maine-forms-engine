@@ -120,7 +120,10 @@ def split_to_copy(src_pdf: pathlib.Path, dst_pdf: pathlib.Path,
         return 0
     import pikepdf
 
-    pdf = pikepdf.open(str(src_pdf))
-    n = split(pdf, specs)
-    pdf.save(str(dst_pdf))
+    # Context manager so the file handle is released even if split()/save()
+    # raises — this runs per fill inside the long-lived MCP server every
+    # sibling repo hosts, where leaked handles accumulate.
+    with pikepdf.open(str(src_pdf)) as pdf:
+        n = split(pdf, specs)
+        pdf.save(str(dst_pdf))
     return n

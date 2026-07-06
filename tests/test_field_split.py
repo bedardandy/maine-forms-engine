@@ -78,3 +78,33 @@ def test_no_specs_means_no_copy(tmp_path):
     assert specs_for("TEST-N", root) == []
     assert split_to_copy(tmp_path / "in.pdf", tmp_path / "out.pdf",
                          "TEST-N", root) == 0
+
+
+def test_split_to_copy_closes_the_pdf_handle(shared_field_tree, tmp_path,
+                                              monkeypatch):
+    """Regression (audit 2026-07-06): split_to_copy used to open the source
+    PDF without a context manager, leaking one handle per fill inside the
+    long-lived MCP server. Assert the opened Pdf is closed before return."""
+    import maine_forms_engine.fill.field_split as fs
+
+    opened = []
+    real_open = pikepdf.open
+
+    def tracking_open(*a, **kw):
+        pdf = real_open(*a, **kw)
+        opened.append(pdf)
+        return pdf
+
+    monkeypatch.setattr(pikepdf, "open", tracking_open)
+    # field_split imports pikepdf lazily inside the function, so the patched
+    # module attribute is what it resolves.
+    src = shared_field_tree / "TEST-S" / "TEST-S.pdf"
+    dst = tmp_path / "TEST-S.split.pdf"
+    n = fs.split_to_copy(src, dst, "TEST-S", shared_field_tree)
+    assert n == 1
+    assert opened, "split_to_copy did not open the source PDF"
+    # every Pdf opened by split_to_copy must be closed on return. pikepdf
+    # marks a closed handle by resetting .filename to "closed input source".
+    for pdf in opened:
+        assert pdf.filename == "closed input source", (
+            "split_to_copy leaked an open pikepdf handle")
