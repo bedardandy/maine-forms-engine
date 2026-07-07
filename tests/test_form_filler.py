@@ -31,6 +31,20 @@ class WrapAcrossWidgets(unittest.TestCase):
         self.assertEqual(lines[1], "longword")
         self.assertEqual(rem, "ok")
 
+    @pytest.mark.xfail(reason="audit 2026-07-06 follow-up: a wide word that "
+                       "jumps ahead leaves the skipped widget blank; a later "
+                       "narrow word could fill it, but packing it there would "
+                       "reorder text out of top-to-bottom reading order "
+                       "(see PR discussion). Deferred as a design decision.",
+                       strict=True)
+    def test_skipped_widget_backfilled_by_later_word(self):
+        # 'bbbbbbbb' (8) skips widgets 0 and 1 (cap 5) to land in widget 2;
+        # 'cc' (2) fits the skipped widget 1. The gap currently stays blank:
+        # actual == (['aaaa', '', 'bbbbbbbb cc'], '').
+        lines, rem = _wrap_across_widgets("aaaa bbbbbbbb cc", [5, 5, 20])
+        self.assertNotEqual(lines[1], "")
+        self.assertEqual(rem, "")
+
 
 @pytest.fixture
 def out(tmp_path):

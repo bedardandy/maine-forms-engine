@@ -345,10 +345,51 @@ def fill_via_mapping(form_id: str, facts: dict, out_dir: pathlib.Path,
     fid_to_widgets: dict[str, list[str]] = {}
     for f in res["_schema"]["fields"]:
         fid_to_widgets.setdefault(f["field_id"], []).append(f["label"])
+    # Build the label-keyed fill dict. Because fill_form is keyed by widget
+    # LABEL, two *different* field_ids that resolve to the SAME widget label
+    # collide: the later write silently overwrites the earlier one and only
+    # one value reaches the PDF. That is distinct from the shared-AcroForm-
+    # field case (ONE field_id, many appearances) that field_split.py handles
+    # by detaching an appearance; here it is genuinely conflicting values for
+    # one box, so we can't split it — we surface it. We also make `resolved`
+    # truthful: it must reflect widgets actually written, not the resolved
+    # field_id count (which double-counts field_ids the collision dropped).
     field_data: dict[str, str] = {}
+    # label -> the field_id that first claimed it (for conflict reporting).
+    label_owner: dict[str, str] = {}
+    label_conflicts: list[dict] = []
+    # field_ids that resolved to a value but had ALL their widget labels
+    # overwritten by a later, differing field_id (so nothing they resolved
+    # actually reached the PDF).
+    shadowed_fids: set[str] = set()
     for fid, v in fitted.items():
         for label in fid_to_widgets.get(fid, []):
+            if label in field_data and field_data[label] != v:
+                # Different field_id, different value, same widget label:
+                # a silent overwrite. Record it. Last-write-wins is kept so
+                # the PDF byte-output is unchanged from prior behavior — the
+                # fix is to stop lying about it, not to reshuffle who wins.
+                prev_fid = label_owner.get(label)
+                label_conflicts.append({
+                    "label": label,
+                    "kept_field_id": fid,
+                    "kept_value": v,
+                    "dropped_field_id": prev_fid,
+                    "dropped_value": field_data[label],
+                })
+                if prev_fid is not None:
+                    shadowed_fids.add(prev_fid)
             field_data[label] = v
+            label_owner[label] = fid
+    # A field_id is only truly shadowed if NONE of its labels survived. Re-add
+    # any that still own at least one label (e.g. a fid backing two widgets
+    # where only one collided).
+    surviving_fids = set(label_owner.values())
+    shadowed_fids -= surviving_fids
+    # Truthful resolution count: resolved field_ids minus those whose written
+    # value was entirely dropped by a collision. With no collisions this is
+    # unchanged (== res["resolved"]), so existing consumers see no drift.
+    resolved_written = res["resolved"] - len(shadowed_fids)
     out_dir.mkdir(parents=True, exist_ok=True)
     # Split any shared AcroForm fields (forms/<ID>/field_splits.json) on a
     # working copy first, so a value mapped to one appearance no longer fans
@@ -411,12 +452,16 @@ def fill_via_mapping(form_id: str, facts: dict, out_dir: pathlib.Path,
                "computation_notes"):
         if _k in res:
             _extra[_k] = res[_k]
+    if label_conflicts:
+        # Additive diagnostic: two field_ids resolved to one widget label; the
+        # loser's value never reached the PDF. Present on both result styles.
+        _extra["label_conflicts"] = label_conflicts
     if result_style == "tax":
         return {
             **_extra,
             "form_id": form_id, "ok": True, "status": res["status"],
             "out_pdf": str(out_pdf),
-            "mapped_keys": res["mapped_keys"], "resolved": res["resolved"],
+            "mapped_keys": res["mapped_keys"], "resolved": resolved_written,
             # canonical keys that resolved to nothing in the case object
             "unresolved": [list(u) for u in res["unresolved"]],
             # widgets actually written, counted by the filler (not the request)
@@ -429,8 +474,8 @@ def fill_via_mapping(form_id: str, facts: dict, out_dir: pathlib.Path,
         }
     out = {**_extra,
            "form_id": form_id, "ok": True, "out_pdf": str(out_pdf),
-           "mapped_keys": res["mapped_keys"], "resolved": res["resolved"],
-           "coverage": (round(res["resolved"] / res["mapped_keys"], 3)
+           "mapped_keys": res["mapped_keys"], "resolved": resolved_written,
+           "coverage": (round(resolved_written / res["mapped_keys"], 3)
                         if res["mapped_keys"] else 0.0),
            "unresolved": [{"field_id": fid, "key": key}
                           for fid, key in res["unresolved"]],
@@ -439,7 +484,7 @@ def fill_via_mapping(form_id: str, facts: dict, out_dir: pathlib.Path,
                             "detail": blank_detail}}
     if split_skipped:
         out["split_step_skipped"] = split_skipped
-    if res["resolved"] == 0 and res["mapped_keys"]:
+    if resolved_written == 0 and res["mapped_keys"]:
         # A zero-resolved fill is a blank PDF — almost always a fact-object
         # shape problem (engine-shape case passed to the canonical-mapping
         # path). Surface it as a failure instead of a silent near-blank.

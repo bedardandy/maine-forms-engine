@@ -1,6 +1,7 @@
 """End-to-end mapping fill over a synthetic consumer-repo tree (modeled on
 maine-court-forms tests/test_fill_smoke.py, with the unshipped official
 blanks replaced by an in-test fixture form)."""
+import hashlib
 import json
 import warnings
 
@@ -11,7 +12,7 @@ from maine_forms_engine.fill.fill_via_mapping import (
     fill_via_mapping, resolve_mapping)
 from maine_forms_engine.fill.verify_fill import verify_fill
 
-from conftest import CASE
+from conftest import CASE, synthetic_form
 
 
 def test_resolve_mapping_coverage(form_tree):
@@ -158,3 +159,87 @@ def test_tax_result_style_diagnostics(form_tree, tmp_path):
     # + the __wrap_cache_ entry the filler adds for the group).
     assert res["fields_written"] == 4
     assert res["unresolved"] == []
+
+
+# --- label-collision silent-overwrite regression (audit 2026-07-06) ---------
+#
+# fill_form is keyed by widget LABEL. Two DIFFERENT field_ids that resolve to
+# the SAME widget label collide: the later write silently overwrites the
+# earlier one, only one value reaches the PDF, yet `resolved` (and therefore
+# `coverage`) used to count BOTH — over-reporting coverage on a blank box.
+
+def _collision_tree(tmp_path, *, distinct_values=True):
+    """A forms/TEST-C tree whose schema gives two text field_ids the SAME
+    widget label ('name_field'), each mapped to a different case key."""
+    root = tmp_path / "collision_repo"
+    fdir = root / "forms" / "TEST-C"
+    (fdir / "examples").mkdir(parents=True)
+    blank = fdir / "TEST-C.pdf"
+    synthetic_form(blank)
+    schema = {"form_id": "TEST-C", "fields": [
+        {"field_id": "name_field", "label": "name_field",
+         "rect": [72, 100, 400, 120]},
+        # a SECOND, distinct field_id sharing name_field's widget label
+        {"field_id": "addr_field", "label": "name_field",
+         "rect": [72, 140, 400, 160]},
+    ]}
+    mapping = {"form_id": "TEST-C", "status": "verified", "map": {
+        "name_field": "parties.plaintiff.full_name",
+        "addr_field": "parties.plaintiff.address",
+    }}
+    addr = "1 Main St" if distinct_values else "Jane Q. Doe"
+    case = {"parties": {"plaintiff": {"full_name": "Jane Q. Doe",
+                                      "address": addr}}}
+    (fdir / "schema.json").write_text(json.dumps(schema))
+    (fdir / "mapping.json").write_text(json.dumps(mapping))
+    (fdir / "examples" / "sample_case.json").write_text(json.dumps(case))
+    data = blank.read_bytes()
+    (root / "catalog").mkdir()
+    (root / "catalog" / "pdf_manifest.json").write_text(json.dumps({
+        "count": 1, "forms": {"TEST-C": {
+            "url": "https://example.test/TEST-C",
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "bytes": len(data)}}}))
+    return root, case
+
+
+def test_label_collision_makes_resolved_truthful(tmp_path):
+    root, case = _collision_tree(tmp_path, distinct_values=True)
+    res = fill_via_mapping("TEST-C", case, tmp_path / "out",
+                           forms_root=root / "forms")
+    assert res["ok"], res
+    # Two keys resolved from the case, but only ONE distinct value could land
+    # on the shared widget label — `resolved` must reflect what was written.
+    assert res["mapped_keys"] == 2
+    assert res["resolved"] == 1
+    assert res["coverage"] == 0.5
+    # ...and the dropped value is surfaced, not swallowed.
+    conflicts = res["label_conflicts"]
+    assert len(conflicts) == 1
+    c = conflicts[0]
+    assert c["label"] == "name_field"
+    assert {c["kept_field_id"], c["dropped_field_id"]} == {
+        "name_field", "addr_field"}
+    assert {c["kept_value"], c["dropped_value"]} == {"Jane Q. Doe", "1 Main St"}
+
+
+def test_label_collision_same_value_is_not_a_conflict(tmp_path):
+    # Two field_ids resolving to the SAME value on one label is a harmless
+    # idempotent write, not a data-loss collision — no conflict, no undercount.
+    root, case = _collision_tree(tmp_path, distinct_values=False)
+    res = fill_via_mapping("TEST-C", case, tmp_path / "out",
+                           forms_root=root / "forms")
+    assert res["ok"], res
+    assert "label_conflicts" not in res
+    assert res["resolved"] == 2
+
+
+def test_no_collision_leaves_resolved_and_result_shape_unchanged(form_tree,
+                                                                 tmp_path):
+    # Backward-compat guard for the four consumer repos that pin by tag: with
+    # no colliding labels, `resolved` is unchanged and no additive key appears.
+    res = fill_via_mapping("TEST-1", CASE, tmp_path / "out",
+                           forms_root=form_tree / "forms")
+    assert res["resolved"] == 4
+    assert res["coverage"] == 1.0
+    assert "label_conflicts" not in res
