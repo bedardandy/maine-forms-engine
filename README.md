@@ -2,6 +2,24 @@
 
 # maine-forms-engine
 
+
+## ⚠ Licensing notice
+
+This repository is licensed **Apache-2.0**, but installing it pulls in **AGPL-3.0**
+code.
+
+PyMuPDF (imported as `fitz`) is dual-licensed **AGPL-3.0-or-commercial** by Artifex.
+It is a **required base dependency** of this snapshot (`pyproject.toml`), so `pip install` of this package resolves it with no opt-in.
+
+If you convey a work combining this code with PyMuPDF, or expose it to users over a
+network (AGPL-3.0 §13), the AGPL-3.0 terms attach to the combination. Artifex sells a
+commercial license if that is not acceptable for your deployment.
+
+This repository is **archived and read-only** — a snapshot frozen in July 2026, not
+maintained. This notice was added later to disclose a dependency term the Apache-2.0
+LICENSE alone does not mention. It does not change the license of this repository's
+own source, which remains Apache-2.0.
+
 The shared core extracted from the four Maine forms libraries — the ~1,800
 lines of fill engine, upstream-drift guard, PDF/UA accessibility remediation,
 and MCP scaffolding that were previously copy-ported (and drifting) across:

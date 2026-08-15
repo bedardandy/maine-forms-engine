@@ -20,6 +20,7 @@ classifiers = [
 ]
 # Pinned-loose: what the donor modules actually import.
 dependencies = [
+  # AGPL-3.0-or-commercial (Artifex) — see the licensing notice in README.md
   "PyMuPDF>=1.24,<2",     # fitz — fill path, verify_fill, caption geometry
   "pikepdf>=8.0,<11",     # field_split + all accessibility remediation
   "fonttools>=4.50,<5",   # embed_widget_font / make_zapf_ttf
